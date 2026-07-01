@@ -122,6 +122,7 @@ const fetchRoot = (request: PageRequest) => delay(pageEntities(ROOTS, request));
 const fetchChildren = (parentId: string, request: PageRequest) =>
   delay(pageEntities(CHILDREN[parentId] ?? [], request));
 const fetchSeries = (entityId: string) => delay(SERIES.get(entityId) ?? []);
+const MICROSECOND_UNIT = '\u00b5s';
 
 // ============================================================================
 // SECTION 3 — YOUR COLUMNS (per depth). field = a key on the node: 'avg'/'med'/
@@ -136,7 +137,7 @@ const metric = (field: 'avg' | 'med' | 'max', headerName: string): GridColDef =>
   type: 'number',
   align: 'right',
   headerAlign: 'right',
-  valueFormatter: (value) => (value == null ? '' : `${value as number} ms`),
+  valueFormatter: (value) => (value == null ? '' : `${value as number} ${MICROSECOND_UNIT}`),
 });
 
 const levels: NestedLevel[] = [

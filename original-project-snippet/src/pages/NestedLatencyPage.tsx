@@ -124,6 +124,22 @@ type PageMeta = Pick<PageResponse<unknown>, "last" | "page" | "totalElements">;
 
 const PAGE_SIZE = 25;
 const MAX_CHART_SERIES = 6;
+const MICROSECOND_UNIT = "\u00b5s";
+
+const compactLatencyFormatter = new Intl.NumberFormat("en-US", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+const LEVEL_TAG_STYLES: Record<
+  string,
+  { bgcolor: string; color: string; borderColor: string }
+> = {
+  Gateway: { bgcolor: "#e0f2fe", color: "#075985", borderColor: "#7dd3fc" },
+  Instance: { bgcolor: "#fef3c7", color: "#92400e", borderColor: "#fbbf24" },
+  Participant: { bgcolor: "#dcfce7", color: "#166534", borderColor: "#86efac" },
+  User: { bgcolor: "#f3e8ff", color: "#6b21a8", borderColor: "#d8b4fe" },
+};
 
 const METRIC_OPTIONS: { value: MetricKey; label: string }[] = [
   { value: "me_med", label: "ME Med" },
@@ -383,12 +399,46 @@ function formatNumber(value: number | null | undefined) {
   return numberFormatter.format(value);
 }
 
-function formatLatency(value: number | null | undefined) {
+function formatLatency(value: number | null | undefined, compact = false) {
   if (value == null) {
     return "";
   }
 
-  return `${numberFormatter.format(value)} ms`;
+  const formatter =
+    compact && Math.abs(value) >= 100_000
+      ? compactLatencyFormatter
+      : numberFormatter;
+
+  return `${formatter.format(Math.round(value))} ${MICROSECOND_UNIT}`;
+}
+
+function formatLatencyDetail(value: number | null | undefined) {
+  if (value == null) {
+    return "";
+  }
+
+  if (Math.abs(value) >= 1_000_000) {
+    return `${formatLatency(value)} (${(value / 1_000_000).toLocaleString(
+      "en-US",
+      { maximumFractionDigits: 2 },
+    )} s)`;
+  }
+
+  return formatLatency(value);
+}
+
+function shouldUseLogScale(values: number[]) {
+  const positiveValues = values.filter(
+    (value) => Number.isFinite(value) && value > 0,
+  );
+  if (positiveValues.length < 2) {
+    return false;
+  }
+
+  const min = Math.min(...positiveValues);
+  const max = Math.max(...positiveValues);
+
+  return max >= 1_000_000 && max / Math.max(min, 1) >= 1_000;
 }
 
 function getLatencyClass(value: unknown) {
@@ -396,11 +446,15 @@ function getLatencyClass(value: unknown) {
     return "";
   }
 
-  if (value >= 100) {
+  if (value >= 10_000_000) {
+    return "latency-critical";
+  }
+
+  if (value >= 1_000_000) {
     return "latency-high";
   }
 
-  if (value >= 50) {
+  if (value >= 100_000) {
     return "latency-warn";
   }
 
@@ -864,7 +918,17 @@ function renderNumberCell(
 function renderLatencyCell(
   params: GridRenderCellParams<NestedLatencyGridRow, number | undefined>,
 ) {
-  return params.row.kind === "loader" ? "" : formatLatency(params.value);
+  if (params.row.kind === "loader" || params.value == null) {
+    return "";
+  }
+
+  return (
+    <Tooltip title={formatLatencyDetail(params.value)} disableInteractive>
+      <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+        {formatLatency(params.value, true)}
+      </Box>
+    </Tooltip>
+  );
 }
 
 function buildColumns({
@@ -1011,8 +1075,12 @@ function buildColumns({
                 borderRadius: 1,
                 fontSize: 11,
                 fontWeight: 800,
-                color: "text.secondary",
-                bgcolor: "action.hover",
+                border: "1px solid",
+                ...(LEVEL_TAG_STYLES[params.row.levelLabel] ?? {
+                  bgcolor: "action.hover",
+                  color: "text.secondary",
+                  borderColor: "divider",
+                }),
               }}
             />
             <Typography
@@ -1312,6 +1380,10 @@ function NestedLatencyGrid({
             "& .latency-high": {
               color: theme.palette.error.main,
             },
+            "& .latency-critical": {
+              color: theme.palette.error.dark,
+              fontWeight: 850,
+            },
             "& .MuiDataGrid-cell:focus, & .MuiDataGrid-cell:focus-within": {
               outline: `2px solid ${theme.palette.primary.main}`,
               outlineOffset: -2,
@@ -1350,6 +1422,10 @@ function LatencyChartCard({
         entities.flatMap((entity) => entity.series.map((point) => formatTime(point))),
       ),
     ).sort();
+    const metricValues = entities.flatMap((entity) =>
+      entity.series.map((point) => point[metric]),
+    );
+    const useLogScale = shouldUseLogScale(metricValues);
 
     const series: LineSeriesOption[] = entities.map((entity) => {
       const pointsByTime = new Map(
@@ -1410,7 +1486,7 @@ function LatencyChartCard({
         extraCssText:
           "box-shadow:0 12px 30px rgba(15,23,42,0.16);border-radius:8px;",
         valueFormatter: (value) =>
-          typeof value === "number" ? `${numberFormatter.format(value)} ms` : "",
+          typeof value === "number" ? formatLatency(value, true) : "",
       },
       toolbox: {
         right: 8,
@@ -1439,12 +1515,14 @@ function LatencyChartCard({
         },
       },
       yAxis: {
-        type: "value",
+        type: useLogScale ? "log" : "value",
         scale: true,
+        min: useLogScale ? 1 : undefined,
+        logBase: 10,
         axisLabel: {
           color: theme.palette.text.secondary,
           fontSize: 11,
-          formatter: (value: number) => `${value} ms`,
+          formatter: (value: number) => formatLatency(value, true),
         },
         splitLine: {
           lineStyle: { color: theme.palette.divider },

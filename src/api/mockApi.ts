@@ -35,20 +35,28 @@ function median(values: number[]): number {
 }
 
 /**
- * Generate a realistic minute-by-minute series around `base` ms.
- * Guarantees max >= avg >= med at every point. A midday "bump" plus the odd
- * spike keeps the chart visually interesting.
+ * Generate a realistic minute-by-minute series around `base` microseconds.
+ * Guarantees max >= avg >= med at every point. Max latency can include rare
+ * second-scale stalls, matching the production shape where max is often an
+ * outlier compared with median and average.
  */
 function genSeries(base: number): MinutePoint[] {
   let med = base;
+  const extremeOutlierMinute = Math.random() < 0.55 ? randInt(0, TIMES.length - 1) : -1;
   return TIMES.map((t, i) => {
     med += (Math.random() - 0.5) * base * 0.08;
     med = clamp(med, base * 0.5, base * 1.8);
     const bump = Math.sin((i / TIMES.length) * Math.PI) * base * 0.25;
     const medV = med + bump;
     const avgV = medV * (1.05 + Math.random() * 0.12);
-    const spike = Math.random() < 0.04 ? base * (1 + Math.random() * 2.5) : 0;
-    const maxV = avgV * (1.2 + Math.random() * 0.35) + spike;
+    const localSpike = Math.random() < 0.04 ? base * (8 + Math.random() * 45) : 0;
+    const slowStall = Math.random() < 0.01 ? randInt(1_000_000, 12_000_000) : 0;
+    const extremeStall = i === extremeOutlierMinute ? randInt(30_000_000, 100_000_000) : 0;
+    const maxV = Math.max(
+      avgV * (1.2 + Math.random() * 0.35) + localSpike,
+      slowStall,
+      extremeStall,
+    );
     return { t, med: round(medV), avg: round(avgV), max: round(maxV) };
   });
 }

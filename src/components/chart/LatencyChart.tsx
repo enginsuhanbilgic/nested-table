@@ -25,6 +25,13 @@ const AXIS = '#64748b';
 const GRID = '#e6edf5';
 const TEXT = '#263244';
 const ZOOM = '#2563eb';
+const MICROSECOND_UNIT = '\u00b5s';
+
+const numberFormatter = new Intl.NumberFormat('en-US');
+const compactFormatter = new Intl.NumberFormat('en-US', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
 
 const METRIC_LABEL: Record<LatencyMetric, string> = {
   med: 'Median',
@@ -40,11 +47,29 @@ type TooltipItem = {
   value?: number;
 };
 
+function formatLatency(value: number, compact = false) {
+  const formatter =
+    compact && Math.abs(value) >= 100_000 ? compactFormatter : numberFormatter;
+  return `${formatter.format(Math.round(value))} ${MICROSECOND_UNIT}`;
+}
+
+function shouldUseLogScale(values: number[]) {
+  const positiveValues = values.filter((value) => Number.isFinite(value) && value > 0);
+  if (positiveValues.length < 2) return false;
+  const min = Math.min(...positiveValues);
+  const max = Math.max(...positiveValues);
+  return max >= 1_000_000 && max / Math.max(min, 1) >= 1_000;
+}
+
 /** Entity comparison chart. Metric selection lives in ChartCard. */
 export function LatencyChart({ entities, metric = 'med', height = 300 }: Props) {
   const option = useMemo<EChartsOption>(() => {
     const times = entities[0]?.series.map((p) => p.t) ?? [];
     const label = METRIC_LABEL[metric];
+    const metricValues = entities.flatMap((entity) =>
+      entity.series.map((point) => point[metric]),
+    );
+    const useLogScale = shouldUseLogScale(metricValues);
 
     const series: LineSeriesOption[] = entities.map((entity) => ({
       name: entity.label,
@@ -82,11 +107,15 @@ export function LatencyChart({ entities, metric = 'med', height = 300 }: Props) 
           const header = items[0].axisValueLabel ?? items[0].axisValue ?? '';
           const rows = items
             .map((item) => {
-              const value = item.value == null ? '-' : `${item.value} ms`;
+              const numericValue = item.value == null ? null : Number(item.value);
+              const value =
+                numericValue == null || !Number.isFinite(numericValue)
+                  ? '-'
+                  : formatLatency(numericValue, true);
               return `<div style="display:flex;align-items:center;justify-content:space-between;gap:24px;margin-top:7px;"><span>${item.marker ?? ''}${item.seriesName ?? ''}</span><strong>${value}</strong></div>`;
             })
             .join('');
-          return `<div style="min-width:210px;font-weight:700;margin-bottom:2px;">${header} - ${label}</div>${rows}`;
+          return `<div style="min-width:210px;font-weight:700;margin-bottom:2px;">${header} - ${label}${useLogScale ? ' (log scale)' : ''}</div>${rows}`;
         },
       },
       toolbox: {
@@ -128,9 +157,15 @@ export function LatencyChart({ entities, metric = 'med', height = 300 }: Props) 
         },
       },
       yAxis: {
-        type: 'value',
+        type: useLogScale ? 'log' : 'value',
         scale: true,
-        axisLabel: { color: AXIS, fontSize: 11 },
+        min: useLogScale ? 1 : undefined,
+        logBase: 10,
+        axisLabel: {
+          color: AXIS,
+          fontSize: 11,
+          formatter: (value: number) => formatLatency(value, true),
+        },
         axisLine: { show: false },
         splitLine: { lineStyle: { color: GRID } },
       },

@@ -229,6 +229,7 @@ export function NestedDataGrid({
           '& .latency-good': { color: '#047857' },
           '& .latency-warn': { color: '#b45309' },
           '& .latency-high': { color: '#b91c1c' },
+          '& .latency-critical': { color: '#7f1d1d', fontWeight: 800 },
           '& .MuiDataGrid-cell:focus, & .MuiDataGrid-cell:focus-within': {
             outline: '2px solid',
             outlineColor: 'primary.main',

@@ -4,6 +4,26 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { GridRenderCellParams } from '@mui/x-data-grid';
 import type { FlatRow } from './types';
 
+const LEVEL_TAG_STYLES: Record<string, { bgcolor: string; color: string; borderColor: string }> = {
+  Gateway: { bgcolor: '#e0f2fe', color: '#075985', borderColor: '#7dd3fc' },
+  Instance: { bgcolor: '#fef3c7', color: '#92400e', borderColor: '#fbbf24' },
+  Participant: { bgcolor: '#dcfce7', color: '#166534', borderColor: '#86efac' },
+  User: { bgcolor: '#f3e8ff', color: '#6b21a8', borderColor: '#d8b4fe' },
+  Region: { bgcolor: '#e0f2fe', color: '#075985', borderColor: '#7dd3fc' },
+  DC: { bgcolor: '#fef3c7', color: '#92400e', borderColor: '#fbbf24' },
+  Server: { bgcolor: '#f3e8ff', color: '#6b21a8', borderColor: '#d8b4fe' },
+};
+
+const FALLBACK_LEVEL_TAG_STYLES = [
+  { bgcolor: '#e0f2fe', color: '#075985', borderColor: '#7dd3fc' },
+  { bgcolor: '#fef3c7', color: '#92400e', borderColor: '#fbbf24' },
+  { bgcolor: '#f3e8ff', color: '#6b21a8', borderColor: '#d8b4fe' },
+];
+
+function getLevelTagStyle(levelLabel: string, depth: number) {
+  return LEVEL_TAG_STYLES[levelLabel] ?? FALLBACK_LEVEL_TAG_STYLES[depth % FALLBACK_LEVEL_TAG_STYLES.length];
+}
+
 interface Props {
   params: GridRenderCellParams<FlatRow>;
   onToggle: (id: string) => void;
@@ -90,8 +110,8 @@ export function TreeCell({ params, onToggle, levelLabel }: Props) {
             px: 0.75,
             py: 0.15,
             borderRadius: 1,
-            bgcolor: row._depth === 0 ? 'primary.main' : 'grey.100',
-            color: row._depth === 0 ? 'primary.contrastText' : 'text.secondary',
+            border: '1px solid',
+            ...getLevelTagStyle(levelLabel, row._depth),
             fontSize: 10,
             fontWeight: 700,
             lineHeight: 1.4,
