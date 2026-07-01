@@ -1,75 +1,49 @@
-# React + TypeScript + Vite
+# Nested Latency Explorer
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A React + TypeScript + Vite app that pairs a **reusable nested-row data grid**
+(built on the free MUI X Data Grid) with **Apache ECharts** latency charts. It shows
+two hierarchies side by side, each with its own chart:
 
-Currently, two official plugins are available:
+- **Participants → Users** (2 levels)
+- **Gateway Nodes → Instances → Users** (3 levels)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Each entity has a daily avg/med/max latency (grid columns) and a minute-by-minute
+series from 09:30→18:00 (the chart). All data is mock/generated — there is no backend.
 
-## React Compiler
+## Features
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Nested rows with different columns per level**, arbitrary depth, lazy-loaded on
+  expand — on the free (MIT) Data Grid, no Pro license.
+- **Sorting** that keeps the tree intact (siblings sort within their parent).
+- **Pagination** and per-level row background tints.
+- **Eye icon per row** to show/compare any set of rows on the chart. Turning a row on
+  brings its ancestors along by default, but each is independently removable — so you
+  can compare, say, several users without their participant.
+- **Dual-axis chart**: avg/med on the left, max on the right; each entity gets its own
+  color (matching its eye), each metric a line style (med solid / avg dashed / max
+  dotted). Median-first, with a legend toggle, a zoom slider, and a toolbox.
+- Full-height layout: tables row and charts row split the viewport 50/50.
 
-## Expanding the ESLint configuration
+## Getting started
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```bash
+npm install
+npm run dev       # start the dev server
+npm run build     # type-check + production build
+npm run preview   # serve the production build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Tech stack
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+React 19 · TypeScript · **Vite 7** (see note below) · MUI 9 + MUI X Data Grid 9
+(Community) · Apache ECharts 6.
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+> **Note:** Pinned to Vite 7 on purpose — Vite 8's rolldown bundler cannot build
+> MUI's `export *` chain yet. Do not upgrade to Vite 8. See
+> [CLAUDE.md](CLAUDE.md#critical-constraints-do-not-fix-these).
 
-```
+## For contributors / AI agents
+
+- [CLAUDE.md](CLAUDE.md) — orientation, commands, constraints, conventions, file map.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — data flow and how the nested grid,
+  comparison controller, and chart work.
