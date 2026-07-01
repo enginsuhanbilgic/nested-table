@@ -17,7 +17,7 @@ import { ChartCard } from '../components/ChartCard';
 import { useLatencySeries } from '../components/useLatencySeries';
 import type { NestedLevel } from '../components/NestedDataGrid';
 // ---- the data contract (just the types) -----------------------------------
-import type { EntityNode, MinutePoint } from '../api/mockApi';
+import type { EntityNode, MinutePoint, PageRequest, PagedResult } from '../types';
 
 // ============================================================================
 // SECTION 1 — YOUR DATA
@@ -90,8 +90,37 @@ const CHILDREN: Record<string, EntityNode[]> = {
 const delay = <T,>(value: T, ms = 250): Promise<T> =>
   new Promise((resolve) => setTimeout(() => resolve(value), ms));
 
-const fetchRoot = () => delay(ROOTS);
-const fetchChildren = (parentId: string) => delay(CHILDREN[parentId] ?? []);
+function sortValue(node: EntityNode, field: string): string | number | undefined {
+  if (field === '__tree__' || field === 'name') return node.name;
+  if (field === 'avg' || field === 'med' || field === 'max') return node.daily[field];
+  return node.extra[field];
+}
+
+function pageEntities(rows: EntityNode[], request: PageRequest): PagedResult<EntityNode> {
+  const sorted = request.sort
+    ? [...rows].sort((a, b) => {
+        const av = sortValue(a, request.sort!.field);
+        const bv = sortValue(b, request.sort!.field);
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        const dir = request.sort!.direction === 'desc' ? -1 : 1;
+        if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+        return String(av).localeCompare(String(bv)) * dir;
+      })
+    : rows;
+  const start = request.page * request.pageSize;
+  const end = start + request.pageSize;
+  return {
+    rows: sorted.slice(start, end),
+    total: sorted.length,
+    nextPage: end < sorted.length ? request.page + 1 : null,
+  };
+}
+
+const fetchRoot = (request: PageRequest) => delay(pageEntities(ROOTS, request));
+const fetchChildren = (parentId: string, request: PageRequest) =>
+  delay(pageEntities(CHILDREN[parentId] ?? [], request));
 const fetchSeries = (entityId: string) => delay(SERIES.get(entityId) ?? []);
 
 // ============================================================================
@@ -112,11 +141,11 @@ const metric = (field: 'avg' | 'med' | 'max', headerName: string): GridColDef =>
 
 const levels: NestedLevel[] = [
   // level 0 — Regions
-  { columns: [{ field: 'provider', headerName: 'Provider', width: 110 }, metric('med', 'Med'), metric('avg', 'Avg'), metric('max', 'Max')] },
+  { label: 'Region', columns: [{ field: 'provider', headerName: 'Provider', width: 110 }, metric('med', 'Med'), metric('avg', 'Avg'), metric('max', 'Max')] },
   // level 1 — Data Centers
-  { columns: [{ field: 'tier', headerName: 'Tier', width: 100 }, metric('med', 'Med'), metric('avg', 'Avg'), metric('max', 'Max')] },
+  { label: 'DC', columns: [{ field: 'tier', headerName: 'Tier', width: 100 }, metric('med', 'Med'), metric('avg', 'Avg'), metric('max', 'Max')] },
   // level 2 — Servers
-  { columns: [{ field: 'role', headerName: 'Role', width: 110 }, metric('med', 'Med'), metric('avg', 'Avg'), metric('max', 'Max')] },
+  { label: 'Server', columns: [{ field: 'role', headerName: 'Role', width: 110 }, metric('med', 'Med'), metric('avg', 'Avg'), metric('max', 'Max')] },
 ];
 
 // ============================================================================
@@ -137,14 +166,19 @@ export function NewHierarchyPanel() {
           levels={levels}
           fetchRoot={fetchRoot}
           fetchChildren={fetchChildren}
-          onRowActivate={chart.focus} // double-click = focus this lineage
+          onRowActivate={chart.focus}
           onToggleShown={chart.toggleShown} // eye = add/remove from comparison
           shownIds={chart.shownIds}
           colorOf={chart.colorOf}
         />
       </Box>
       <Box sx={{ height: 360 }}>
-        <ChartCard title="Latency over time" entities={chart.entities} loading={chart.loading} />
+        <ChartCard
+          title="Latency over time"
+          entities={chart.entities}
+          loading={chart.loading}
+          onClear={chart.clear}
+        />
       </Box>
     </Box>
   );

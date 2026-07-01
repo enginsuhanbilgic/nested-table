@@ -14,14 +14,15 @@ series from 09:30→18:00 (the chart). All data is mock/generated — there is n
 
 - **Nested rows with different columns per level**, arbitrary depth, lazy-loaded on
   expand — on the free (MIT) Data Grid, no Pro license.
-- **Sorting** that keeps the tree intact (siblings sort within their parent).
-- **Pagination** and per-level row background tints.
+- **Server-mode sorting** that keeps the tree intact by sorting each sibling group.
+- **Virtualized infinite scrolling** with paged root/child fetches instead of
+  paginating the flattened expanded rows.
 - **Eye icon per row** to show/compare any set of rows on the chart. Turning a row on
   brings its ancestors along by default, but each is independently removable — so you
   can compare, say, several users without their participant.
-- **Dual-axis chart**: avg/med on the left, max on the right; each entity gets its own
-  color (matching its eye), each metric a line style (med solid / avg dashed / max
-  dotted). Median-first, with a legend toggle, a zoom slider, and a toolbox.
+- **Entity comparison chart**: each entity gets its own color (matching its eye), the
+  chart card switches between med/avg/max, and the legend only lists entities. A
+  zoom slider and toolbox stay available.
 - Full-height layout: tables row and charts row split the viewport 50/50.
 
 ## Getting started

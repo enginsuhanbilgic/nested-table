@@ -2,14 +2,14 @@ import { Box, Paper, Typography } from '@mui/material';
 import type { SxProps, Theme } from '@mui/material/styles';
 import { NestedDataGrid } from './NestedDataGrid';
 import type { NestedLevel, RowActivatePath } from './NestedDataGrid';
-import type { EntityNode } from '../api/mockApi';
+import type { EntityNode, PageRequest, PagedResult } from '../types';
 
 interface Props {
   title: string;
   treeHeader: string;
   levels: NestedLevel[];
-  fetchRoot: () => Promise<EntityNode[]>;
-  fetchChildren: (parentId: string) => Promise<EntityNode[]>;
+  fetchRoot: (request: PageRequest) => Promise<PagedResult<EntityNode>>;
+  fetchChildren: (parentId: string, request: PageRequest) => Promise<PagedResult<EntityNode>>;
   onRowActivate: (path: RowActivatePath) => void;
   onToggleShown: (path: RowActivatePath) => void;
   shownIds: Set<string>;
@@ -34,16 +34,33 @@ export function TableCard({
     <Paper
       variant="outlined"
       sx={[
-        { display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0, height: '100%' },
+        {
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          minWidth: 0,
+          height: '100%',
+          borderColor: '#d8e1ec',
+          boxShadow: '0 10px 28px rgba(15, 23, 42, 0.06)',
+        },
         ...(Array.isArray(sx) ? sx : [sx]),
       ]}
     >
-      <Box sx={{ px: 2, py: 1.25, borderBottom: 1, borderColor: 'divider', bgcolor: 'grey.50' }}>
+      <Box
+        sx={{
+          px: 2,
+          py: 1.2,
+          borderBottom: 1,
+          borderColor: 'divider',
+          bgcolor: '#fbfcfe',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 1.5,
+        }}
+      >
         <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
           {title}
-        </Typography>
-        <Typography variant="caption" color="text.secondary">
-          Toggle the eye to show/compare rows · double-click to focus one lineage · sort & page below
         </Typography>
       </Box>
       <Box sx={{ flex: 1, minHeight: 0 }}>

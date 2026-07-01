@@ -10,6 +10,12 @@ export function metricCol(field: 'avg' | 'med' | 'max', headerName: string): Gri
     align: 'right',
     headerAlign: 'right',
     valueFormatter: (value) => (value == null ? '' : `${value as number} ms`),
+    cellClassName: (params) => {
+      const value = Number(params.value);
+      if (!Number.isFinite(value)) return 'latency-cell';
+      const severity = value >= 180 ? 'high' : value >= 110 ? 'warn' : 'good';
+      return `latency-cell latency-${severity}`;
+    },
   };
 }
 

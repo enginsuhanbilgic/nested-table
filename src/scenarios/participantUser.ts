@@ -10,8 +10,9 @@ export const participantScenario: ScenarioConfig = {
   chartTitle: 'Latency over time — participant & user',
   treeHeader: 'Participant / User',
   levels: [
-    { columns: [textCol('region', 'Region', 96), ...metricCols] },
+    { label: 'Participant', columns: [textCol('region', 'Region', 96), ...metricCols] },
     {
+      label: 'User',
       columns: [
         textCol('device', 'Device', 88),
         textCol('status', 'Status', 80),
@@ -19,7 +20,7 @@ export const participantScenario: ScenarioConfig = {
       ],
     },
   ],
-  fetchRoot: () => fetchRoot('participant'),
+  fetchRoot: (request) => fetchRoot('participant', request),
   fetchChildren,
   fetchSeries,
 };

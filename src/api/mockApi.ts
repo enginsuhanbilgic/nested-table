@@ -3,34 +3,11 @@
 // Exposes async fetchers that simulate network latency. Each scenario owns a tree
 // of EntityNodes plus a per-entity minute-by-minute latency series (09:30 -> 18:00).
 // Table data (tree + daily aggregates) is fetched per level (lazy children); the
-// minute series for the chart is fetched on demand when a row is double-clicked.
+// minute series for the chart is fetched on demand when a row is shown.
+
+import type { EntityNode, Metrics, MinutePoint, PageRequest, PagedResult } from '../types';
 
 export type ScenarioId = 'participant' | 'node';
-
-export interface Metrics {
-  avg: number;
-  med: number;
-  max: number;
-}
-
-/** One sample of latency at a given minute of the day. */
-export interface MinutePoint {
-  t: string; // "HH:MM"
-  avg: number;
-  med: number;
-  max: number;
-}
-
-/** A node in a scenario's hierarchy (participant/user, or node/instance/user). */
-export interface EntityNode {
-  id: string;
-  name: string;
-  level: number; // 0 = top level
-  daily: Metrics;
-  /** Level-specific fields surfaced as columns (e.g. region, status, device). */
-  extra: Record<string, string | number>;
-  hasChildren: boolean;
-}
 
 // ---------------------------------------------------------------------------
 // Time axis: one point per minute from 09:30 to 18:00 inclusive (511 points).
@@ -110,6 +87,38 @@ function makeEntity(
 const pick = <T,>(arr: readonly T[], i: number) => arr[i % arr.length];
 const randInt = (lo: number, hi: number) => lo + Math.floor(Math.random() * (hi - lo + 1));
 
+function sortValue(node: EntityNode, field: string): string | number | undefined {
+  if (field === '__tree__' || field === 'name') return node.name;
+  if (field === 'avg' || field === 'med' || field === 'max') return node.daily[field];
+  return node.extra[field];
+}
+
+function pageRows<T>(rows: T[], request: PageRequest): PagedResult<T> {
+  const start = request.page * request.pageSize;
+  const end = start + request.pageSize;
+  return {
+    rows: rows.slice(start, end),
+    total: rows.length,
+    nextPage: end < rows.length ? request.page + 1 : null,
+  };
+}
+
+function pageEntities(rows: EntityNode[], request: PageRequest): PagedResult<EntityNode> {
+  const sorted = request.sort
+    ? [...rows].sort((a, b) => {
+        const av = sortValue(a, request.sort!.field);
+        const bv = sortValue(b, request.sort!.field);
+        if (av == null && bv == null) return 0;
+        if (av == null) return 1;
+        if (bv == null) return -1;
+        const dir = request.sort!.direction === 'desc' ? -1 : 1;
+        if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+        return String(av).localeCompare(String(bv)) * dir;
+      })
+    : rows;
+  return pageRows(sorted, request);
+}
+
 const REGIONS = ['EU-West', 'US-East', 'AP-South', 'EU-North', 'US-West'] as const;
 const DEVICES = ['Web', 'iOS', 'Android', 'Desktop'] as const;
 const STATUSES = ['active', 'idle'] as const;
@@ -118,9 +127,9 @@ const HEALTH = ['healthy', 'degraded'] as const;
 // ---- Scenario 1: participant -> user --------------------------------------
 function buildParticipantTree() {
   const roots: EntityNode[] = [];
-  for (let p = 1; p <= 4; p++) {
+  for (let p = 1; p <= 14; p++) {
     const pid = `p${p}`;
-    const userCount = randInt(3, 6);
+    const userCount = randInt(8, 16);
     const participant = makeEntity(
       pid,
       `Participant ${p}`,
@@ -153,9 +162,9 @@ function buildParticipantTree() {
 // ---- Scenario 2: node -> instance -> user ---------------------------------
 function buildNodeTree() {
   const roots: EntityNode[] = [];
-  for (let n = 1; n <= 3; n++) {
+  for (let n = 1; n <= 10; n++) {
     const nid = `n${n}`;
-    const instanceCount = randInt(2, 3);
+    const instanceCount = randInt(4, 7);
     const node = makeEntity(
       nid,
       `Gateway ${n}`,
@@ -169,7 +178,7 @@ function buildNodeTree() {
     const instances: EntityNode[] = [];
     for (let i = 1; i <= instanceCount; i++) {
       const iid = `${nid}-i${i}`;
-      const userCount = randInt(2, 4);
+      const userCount = randInt(6, 12);
       instances.push(
         makeEntity(
           iid,
@@ -213,16 +222,22 @@ const delay = <T,>(value: T, ms = 300): Promise<T> =>
   new Promise((resolve) => setTimeout(() => resolve(value), ms));
 
 /** Top-level rows for a scenario. */
-export function fetchRoot(scenario: ScenarioId): Promise<EntityNode[]> {
-  return delay(rootsByScenario.get(scenario) ?? [], 200);
+export function fetchRoot(
+  scenario: ScenarioId,
+  request: PageRequest,
+): Promise<PagedResult<EntityNode>> {
+  return delay(pageEntities(rootsByScenario.get(scenario) ?? [], request), 200);
 }
 
 /** Children of a row, loaded when it is expanded. */
-export function fetchChildren(parentId: string): Promise<EntityNode[]> {
-  return delay(childrenByParent.get(parentId) ?? [], 400);
+export function fetchChildren(
+  parentId: string,
+  request: PageRequest,
+): Promise<PagedResult<EntityNode>> {
+  return delay(pageEntities(childrenByParent.get(parentId) ?? [], request), 400);
 }
 
-/** Minute-by-minute series for one entity, loaded when its row is double-clicked. */
+/** Minute-by-minute series for one entity, loaded when its row is shown. */
 export function fetchSeries(entityId: string): Promise<MinutePoint[]> {
   return delay(seriesById.get(entityId) ?? [], 250);
 }

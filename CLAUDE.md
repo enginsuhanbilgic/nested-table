@@ -67,7 +67,8 @@ region so they grow to fill the cell.
 
 ```
 src/
-  api/mockApi.ts                 Mock "server": types, series generator, async fetchers
+  api/mockApi.ts                 Mock "server": series generator, async fetchers
+  types.ts                       Shared EntityNode / MinutePoint / paging contracts
   theme.ts                       Compact light MUI theme
   App.tsx                        Full-height 2×2 layout; instantiates one controller/scenario
   components/
@@ -76,14 +77,14 @@ src/
     ChartCard.tsx                Paper wrapper around LatencyChart (+ placeholder / loading)
     NestedDataGrid/
       NestedDataGrid.tsx         The reusable grid; builds column model, wires DataGrid
-      useNestedRows.ts           Tree state: lazy children, expand set, sort, flatten → rows
+      useNestedRows.ts           Tree state: paged roots/children, expand set, flatten -> rows
       TreeCell.tsx               Indented name cell + expand/collapse arrow
       EyeCell.tsx                Eye toggle (show/hide a row on the chart)
       types.ts                   TREE_FIELD, NestedLevel, RowActivatePath, FlatRow
       index.ts                   Public exports
     chart/
       EChart.tsx                 Minimal bare-echarts React wrapper
-      LatencyChart.tsx           Dual-axis latency chart (ChartEntity[] → ECharts option)
+      LatencyChart.tsx           Entity comparison chart (ChartEntity[] -> ECharts option)
   scenarios/
     types.ts                     ScenarioConfig
     columns.ts                   metricCol / textCol helpers + shared metricCols
@@ -94,10 +95,10 @@ src/
 ## Adding a new scenario
 
 Create a `ScenarioConfig` (see `src/scenarios/participantUser.ts`): give it a
-`levels[]` (columns per depth), a `treeHeader`, and bind `fetchRoot`/`fetchChildren`/
-`fetchSeries` from `mockApi`. Then add a `useLatencySeries` controller + a
-`TableCard`/`ChartCard` pair in `App.tsx`. No changes to `NestedDataGrid`,
-`LatencyChart`, or the controller are needed — they are generic.
+`levels[]` (columns per depth), a `treeHeader`, and bind paged `fetchRoot`/
+`fetchChildren` plus `fetchSeries` from `mockApi`. Then add a `useLatencySeries`
+controller + a `TableCard`/`ChartCard` pair in `App.tsx`. No changes to
+`NestedDataGrid`, `LatencyChart`, or the controller are needed.
 
 ## Key behaviors to preserve
 
@@ -105,10 +106,11 @@ Create a `ScenarioConfig` (see `src/scenarios/participantUser.ts`): give it a
   also pulls in its ancestors (a user brings its participant); turning it **off**
   removes only that row. Multiple rows compare at once.
 - **Double-click a row** = focus: replace the comparison set with just that row's
-  lineage (row + ancestors).
-- **Sorting** sorts siblings *within each parent* (tree stays intact) — this is why
-  the grid uses `sortingMode="server"` and sorts in `useNestedRows`.
-- **Chart**: each entity has one stable color (matching its eye); metric is shown by
-  line style — med solid / avg dashed / max dotted. avg+med on the LEFT axis, max on
-  the RIGHT axis. Only medians are visible by default; the legend toggles avg/max.
-  There is a zoom slider + toolbox.
+  lineage (row + ancestors). There is no separate focus button.
+- **Sorting** is server-mode. The active sort is sent in `PageRequest`; each backend
+  page should return sibling rows in that order.
+- **Scrolling** is virtualized. There is no DataGrid footer pagination; root and child
+  sibling groups fetch their next backend page when their loader row enters view.
+- **Chart**: each entity has one stable color (matching its eye). `ChartCard` owns
+  the med/avg/max metric toggle, so the ECharts legend only lists entities. There
+  is a zoom slider + toolbox.
