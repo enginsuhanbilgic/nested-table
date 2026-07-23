@@ -1,40 +1,46 @@
 import { apiClient } from "./apiClient";
-import { GridSortModel } from "@mui/x-data-grid";
+import type { GridSortModel } from "@mui/x-data-grid";
 import type {
+  DataFreshnessInfo,
+  ExchangeBaseline,
+  GatewayLatencyResponse,
+  InstanceLatencyResponse,
   LatencyDailyAverageStatsFilters,
   LatencyDailyAverageStatsItem,
   LatencyDailyAverageStatsResponse,
+  LatencyFilterOption,
+  LatencyFilterOptions,
   LatencyMinuteStatsFilters,
   LatencyMinuteStatsItem,
   LatencyMinuteStatsResponse,
-  LatencyFilterOption,
-  LatencyFilterOptions,
   Location,
   Market,
+  NestedGatewayInstancesFilters,
+  NestedInstanceUsersFilters,
+  NestedLatencyDailyHistoryResponse,
+  NestedLatencyFilters,
+  NestedLatencyGridFilters,
+  NestedLatencySeriesFilters,
+  NestedLatencySeriesResponse,
+  NestedParticipantUsersFilters,
+  NestedUserLatencyResponse,
+  PageResponse,
+  ParticipantLatencyResponse,
   Partition,
   Protocol,
+  RttBucketRange,
+  RttFilterOptions,
   RttGateway,
   RttLatency,
-  RttFilterOptions,
   RttRangeFilters,
   RttRangeItem,
   RttRangeResponse,
-  PageResponse,
+  SeriesHistoryFilters,
+  SeriesLatencyResponse,
   UserLatencyFilterOptions,
   UserLatencyFilters,
   UserLatencyItem,
   UserLatencyResponse,
-  NestedLatencyFilterOptions,
-  NestedLatencyFilters,
-  NestedGatewayInstancesFilters,
-  NestedInstanceUsersFilters,
-  NestedParticipantUsersFilters,
-  NestedLatencySeriesFilters,
-  GatewayLatencyResponse,
-  InstanceLatencyResponse,
-  ParticipantLatencyResponse,
-  NestedUserLatencyResponse,
-  NestedLatencySeriesResponse,
 } from "../types/latency";
 
 type LatencyTypeName =
@@ -44,9 +50,6 @@ type LatencyTypeName =
   | "protocol"
   | "rtt/gateway"
   | "rtt/latency";
-
-const delay = (ms: number) =>
-  new Promise((resolve) => setTimeout(resolve, ms));
 
 function serializeLatencyDailyAverageFilter(
   filter: LatencyDailyAverageStatsFilters,
@@ -91,7 +94,6 @@ function serializeRttRangeFilter(
   params.append("from", filter.from);
   params.append("to", filter.to);
 
-  // Paging related parameters: page, size, sort
   params.append("page", paginationModel.page.toString());
   params.append("size", paginationModel.pageSize.toString());
 
@@ -134,13 +136,26 @@ function appendCommonNestedLatencyFilters(
   params: URLSearchParams,
   filter: NestedLatencyFilters,
 ) {
-  filter.locations.forEach((value) => params.append("locations", value));
-  filter.markets.forEach((value) => params.append("markets", value));
-  filter.partitions.forEach((value) => params.append("partitions", value));
-  filter.protocols.forEach((value) => params.append("protocols", value));
-
   params.append("date", filter.date);
-  params.append("queryString", filter.queryString);
+
+  if (filter.minOrders > 0) {
+    params.append("minOrders", filter.minOrders.toString());
+  }
+
+  if (filter.threshold) {
+    params.append("thresholdMetric", filter.threshold.metric);
+    params.append("thresholdOp", filter.threshold.operator);
+    params.append("thresholdValue", filter.threshold.value.toString());
+  }
+}
+
+function appendGridQuery(
+  params: URLSearchParams,
+  filter: NestedLatencyGridFilters,
+) {
+  if (filter.queryString) {
+    params.append("queryString", filter.queryString);
+  }
 }
 
 function appendPagingAndSorting(
@@ -159,13 +174,14 @@ function appendPagingAndSorting(
 }
 
 function serializeNestedLatencyPageFilter(
-  filter: NestedLatencyFilters,
+  filter: NestedLatencyGridFilters,
   paginationModel: { page: number; pageSize: number },
   sortModel: GridSortModel,
 ): URLSearchParams {
   const params = new URLSearchParams();
 
   appendCommonNestedLatencyFilters(params, filter);
+  appendGridQuery(params, filter);
   appendPagingAndSorting(params, paginationModel, sortModel);
 
   return params;
@@ -176,7 +192,11 @@ function serializeNestedGatewayInstancesFilter(
   paginationModel: { page: number; pageSize: number },
   sortModel: GridSortModel,
 ): URLSearchParams {
-  const params = serializeNestedLatencyPageFilter(filter, paginationModel, sortModel);
+  const params = serializeNestedLatencyPageFilter(
+    filter,
+    paginationModel,
+    sortModel,
+  );
   params.append("gatewayName", filter.gatewayName);
   return params;
 }
@@ -186,7 +206,11 @@ function serializeNestedInstanceUsersFilter(
   paginationModel: { page: number; pageSize: number },
   sortModel: GridSortModel,
 ): URLSearchParams {
-  const params = serializeNestedLatencyPageFilter(filter, paginationModel, sortModel);
+  const params = serializeNestedLatencyPageFilter(
+    filter,
+    paginationModel,
+    sortModel,
+  );
   params.append("gatewayName", filter.gatewayName);
   params.append("instanceName", filter.instanceName);
   return params;
@@ -197,7 +221,11 @@ function serializeNestedParticipantUsersFilter(
   paginationModel: { page: number; pageSize: number },
   sortModel: GridSortModel,
 ): URLSearchParams {
-  const params = serializeNestedLatencyPageFilter(filter, paginationModel, sortModel);
+  const params = serializeNestedLatencyPageFilter(
+    filter,
+    paginationModel,
+    sortModel,
+  );
   params.append("participantName", filter.participantName);
   return params;
 }
@@ -282,13 +310,10 @@ export async function getDailyAverageLatencyStats(
 ): Promise<LatencyDailyAverageStatsResponse> {
   const params = serializeLatencyDailyAverageFilter(filter);
 
-  const response =
-    await apiClient.get<LatencyDailyAverageStatsResponse>(
-      "/latency/getLatencyDailyAverageStats",
-      {
-        params,
-      },
-    );
+  const response = await apiClient.get<LatencyDailyAverageStatsResponse>(
+    "/latency/getLatencyDailyAverageStats",
+    { params },
+  );
 
   return normalizeDailyStatsResponse(response.data);
 }
@@ -300,9 +325,7 @@ export async function getMinuteLatencyStats(
 
   const response = await apiClient.get<LatencyMinuteStatsResponse>(
     "/latency/getLatencyMinuteStats",
-    {
-      params,
-    },
+    { params },
   );
 
   return normalizeMinuteStatsResponse(response.data);
@@ -321,16 +344,14 @@ export async function getRttLatencyStats(
 
   const response = await apiClient.get<RttRangeResponse>(
     "/latency/getRttRangeStats",
-    {
-      params,
-    },
+    { params },
   );
 
   return normalizeRttRangeResponse(response.data);
 }
 
 ///
-/// User Latency Stats
+/// User Latency Stats (legacy)
 ///
 
 export async function getUserLatencyStats(
@@ -346,9 +367,7 @@ export async function getUserLatencyStats(
 
   const response = await apiClient.get<UserLatencyResponse>(
     "/latency/getUserLatencyStats",
-    {
-      params,
-    },
+    { params },
   );
 
   return normalizeUserLatencyResponse(response.data);
@@ -359,7 +378,7 @@ export async function getUserLatencyStats(
 ///
 
 export async function getNestedGatewayNodes(
-  filter: NestedLatencyFilters,
+  filter: NestedLatencyGridFilters,
   paginationModel: { page: number; pageSize: number },
   sortModel: GridSortModel,
 ): Promise<GatewayLatencyResponse> {
@@ -371,9 +390,7 @@ export async function getNestedGatewayNodes(
 
   const response = await apiClient.get<GatewayLatencyResponse>(
     "/latency/nested/gateways",
-    {
-      params,
-    },
+    { params },
   );
 
   return response.data;
@@ -392,9 +409,7 @@ export async function getNestedGatewayInstances(
 
   const response = await apiClient.get<InstanceLatencyResponse>(
     "/latency/nested/gateway-instances",
-    {
-      params,
-    },
+    { params },
   );
 
   return response.data;
@@ -413,16 +428,14 @@ export async function getNestedInstanceUsers(
 
   const response = await apiClient.get<NestedUserLatencyResponse>(
     "/latency/nested/instance-users",
-    {
-      params,
-    },
+    { params },
   );
 
   return response.data;
 }
 
 export async function getNestedParticipants(
-  filter: NestedLatencyFilters,
+  filter: NestedLatencyGridFilters,
   paginationModel: { page: number; pageSize: number },
   sortModel: GridSortModel,
 ): Promise<ParticipantLatencyResponse> {
@@ -434,9 +447,7 @@ export async function getNestedParticipants(
 
   const response = await apiClient.get<ParticipantLatencyResponse>(
     "/latency/nested/participants",
-    {
-      params,
-    },
+    { params },
   );
 
   return response.data;
@@ -455,9 +466,26 @@ export async function getNestedParticipantUsers(
 
   const response = await apiClient.get<NestedUserLatencyResponse>(
     "/latency/nested/participant-users",
-    {
-      params,
-    },
+    { params },
+  );
+
+  return response.data;
+}
+
+export async function getNestedSeriesLeaderboard(
+  filter: NestedLatencyGridFilters,
+  paginationModel: { page: number; pageSize: number },
+  sortModel: GridSortModel,
+): Promise<SeriesLatencyResponse> {
+  const params = serializeNestedLatencyPageFilter(
+    filter,
+    paginationModel,
+    sortModel,
+  );
+
+  const response = await apiClient.get<SeriesLatencyResponse>(
+    "/latency/nested/series",
+    { params },
   );
 
   return response.data;
@@ -469,17 +497,51 @@ export async function getNestedLatencySeries(
   const params = serializeNestedLatencySeriesFilter(filter);
 
   const response = await apiClient.get<NestedLatencySeriesResponse>(
-    "/latency/nested/series",
-    {
-      params,
-    },
+    "/latency/nested/series-minute",
+    { params },
+  );
+
+  return response.data;
+}
+
+export async function getNestedLatencyDailyHistory(
+  filter: SeriesHistoryFilters,
+): Promise<NestedLatencyDailyHistoryResponse> {
+  const params = new URLSearchParams();
+  params.append("name", filter.name);
+  params.append("days", filter.days.toString());
+
+  const response = await apiClient.get<NestedLatencyDailyHistoryResponse>(
+    "/latency/nested/series-history",
+    { params },
+  );
+
+  return response.data;
+}
+
+export async function getDataFreshness(): Promise<DataFreshnessInfo> {
+  const response = await apiClient.get<DataFreshnessInfo>(
+    "/latency/nested/freshness",
+  );
+  return response.data;
+}
+
+export async function getExchangeBaseline(
+  date: string,
+): Promise<ExchangeBaseline> {
+  const params = new URLSearchParams();
+  params.append("date", date);
+
+  const response = await apiClient.get<ExchangeBaseline>(
+    "/latency/nested/baseline",
+    { params },
   );
 
   return response.data;
 }
 
 ///
-/// Filters related to latency
+/// Filters related to legacy latency pages
 ///
 
 async function getLatencyTypeOptions<TId extends string>(
@@ -531,10 +593,6 @@ export async function getLatencyFilterOptions(): Promise<LatencyFilterOptions> {
   };
 }
 
-export async function getNestedLatencyFilterOptions(): Promise<NestedLatencyFilterOptions> {
-  return getLatencyFilterOptions();
-}
-
 export async function getRttLatencyTypes(): Promise<
   LatencyFilterOption<RttLatency>[]
 > {
@@ -547,15 +605,58 @@ export async function getRttGatewayTypes(): Promise<
   return getLatencyTypeOptions<RttGateway>("rtt/gateway");
 }
 
+// Placeholder ladder used until the backend serves the real bucket
+// boundaries via /latency/types/rtt/ranges. 36 buckets: 10µs steps to
+// 100µs, 25µs steps to 300µs, 100µs steps to 800µs, then 800→1200 and
+// doubling up to 2.46s, with an open-ended last bucket.
+function buildDefaultRttBucketRanges(): RttBucketRange[] {
+  const edges: number[] = [];
+  for (let value = 0; value <= 100; value += 10) edges.push(value);
+  for (let value = 125; value <= 300; value += 25) edges.push(value);
+  for (let value = 400; value <= 800; value += 100) edges.push(value);
+  edges.push(1200);
+  for (let value = 2400; value <= 2_457_600; value *= 2) edges.push(value);
+
+  return edges.map((fromMicros, i) => ({
+    index: i + 1,
+    fromMicros,
+    toMicros: i + 1 < edges.length ? edges[i + 1] : null,
+  }));
+}
+
+export const DEFAULT_RTT_BUCKET_RANGES: RttBucketRange[] =
+  buildDefaultRttBucketRanges();
+
+export async function getRttBucketRanges(): Promise<RttBucketRange[]> {
+  try {
+    const response = await apiClient.get<RttBucketRange[]>(
+      "/latency/types/rtt/ranges",
+    );
+
+    const ranges = [...response.data].sort((a, b) => a.index - b.index);
+
+    return ranges.length > 0 ? ranges : DEFAULT_RTT_BUCKET_RANGES;
+  } catch (error) {
+    console.warn(
+      "Could not load RTT bucket ranges from backend; using built-in defaults",
+      error,
+    );
+    return DEFAULT_RTT_BUCKET_RANGES;
+  }
+}
+
 export async function getRttFilterOptions(): Promise<RttFilterOptions> {
-  const [rttLatencyTypes, rttGatewayTypes] = await Promise.all([
-    getRttLatencyTypes(),
-    getRttGatewayTypes(),
-  ]);
+  const [rttLatencyTypes, rttGatewayTypes, rttBucketRanges] =
+    await Promise.all([
+      getRttLatencyTypes(),
+      getRttGatewayTypes(),
+      getRttBucketRanges(),
+    ]);
 
   return {
     rttLatencyTypes,
     rttGatewayTypes,
+    rttBucketRanges,
   };
 }
 

@@ -11,21 +11,21 @@ export type DateString = string; //e.g. 2026-05-18
 export type Time = {
   hour: number;
   minute: number;
-}
+};
 
 export type DateInterval = {
   from: DateString;
   to: DateString;
-}
+};
 
 export type DateFilter = {
   date: DateString;
-}
+};
 
 export type LatencyFilterOption<TId extends string = string> = {
   id: TId;
   label: string;
-}
+};
 
 export type PageResponse<T> = {
   content: T[];
@@ -35,29 +35,26 @@ export type PageResponse<T> = {
   totalPages: number;
   first: boolean;
   last: boolean;
-}
+};
 
 ///
-/// Daily Latency Statistics
+/// Daily Latency Statistics (legacy pages -- kept for compatibility)
 ///
 
-// This is what we get as filter options from the API for Daily Latency
 export type LatencyFilterOptions = {
   locations: LatencyFilterOption<Location>[];
   markets: LatencyFilterOption<Market>[];
   partitions: LatencyFilterOption<Partition>[];
   protocols: LatencyFilterOption<Protocol>[];
-}
+};
 
-// This is what we send to the API as filters to get data back
 export type GeneralLatencyFilter = {
   locations: Location[];
   markets: Market[];
   partitions: Partition[];
   protocols: Protocol[];
-}
+};
 
-// This is what is returned from the API as data
 export type GeneralLatencyItem = {
   totalOrderCount: number;
   slaOrderCount: number;
@@ -66,25 +63,32 @@ export type GeneralLatencyItem = {
   average: number;
   min: number;
   max: number;
-}
+};
 
 ///
-/// Rtt Latency Statistics
+/// Rtt Latency Statistics (legacy)
 ///
 
-// This is what we get as filter options from the API for RTT
+// One histogram bucket boundary served by /latency/types/rtt/ranges.
+// `index` is 1-based and matches the backend's range{index} column;
+// `toMicros === null` marks the open-ended last bucket.
+export type RttBucketRange = {
+  index: number;
+  fromMicros: number;
+  toMicros: number | null;
+};
+
 export type RttFilterOptions = {
   rttLatencyTypes: LatencyFilterOption<RttLatency>[];
   rttGatewayTypes: LatencyFilterOption<RttGateway>[];
-}
+  rttBucketRanges: RttBucketRange[];
+};
 
-// This is what we send to the API as filters to get data back
 export type GeneralRttFilter = {
   latencyType: RttLatency;
   gatewayType: RttGateway;
-}
+};
 
-// This is what is returned from the API as data
 export type GeneralRttItem = {
   date: DateString;
   gwType: string;
@@ -134,26 +138,24 @@ export type GeneralRttItem = {
   range34: number;
   range35: number;
   range36: number;
-}
+};
 
 ///
-/// User Latency Statistics
+/// User Latency Statistics (legacy page)
 ///
 
-// This is what we get as filter options from the API for Daily Latency
 export type UserLatencyFilterOptions = {
   locations: LatencyFilterOption<Location>[];
   partitions: LatencyFilterOption<Partition>[];
   protocols: LatencyFilterOption<Protocol>[];
-}
+};
 
-// This is what we send to the API as filters to get data back
 export type GeneralUserLatencyFilter = {
   queryString: string;
   locations: Location[];
   partitions: Partition[];
   protocols: Protocol[];
-}
+};
 
 export type GeneralUserLatencyItem = {
   id: number;
@@ -178,7 +180,7 @@ export type GeneralUserLatencyItem = {
   meAvg: number;
   meMin: number;
   meMax: number;
-}
+};
 
 export type LatencyDailyAverageStatsFilters = GeneralLatencyFilter & DateInterval;
 export type LatencyDailyAverageStatsItem = GeneralLatencyItem & DateFilter;
@@ -196,68 +198,117 @@ export type UserLatencyFilters = GeneralUserLatencyFilter & DateFilter;
 export type UserLatencyItem = GeneralUserLatencyItem;
 export type UserLatencyResponse = PageResponse<UserLatencyItem>;
 
-export type MinuteCacheEntry = { data: LatencyMinuteStatsResponse; cachedAt: number; }
+export type MinuteCacheEntry = {
+  data: LatencyMinuteStatsResponse;
+  cachedAt: number;
+};
 
 ///
 /// Nested Latency Explorer
+///
+/// Contracts here mirror the stat.v_* views from the latency-stats
+/// pipeline. Latencies are microseconds; timestamps in freshness are ISO 8601.
 ///
 
 export type NestedLatencyEntityType =
   | "gateway"
   | "instance"
   | "participant"
-  | "user";
+  | "user"
+  | "series";
 
-export type NestedLatencyFilterOptions = LatencyFilterOptions;
+export type NestedLatencyViewMode =
+  | "both"
+  | "gateway"
+  | "participant"
+  | "series";
 
-export type NestedLatencyFilters = GeneralLatencyFilter & DateFilter & {
-  queryString: string;
-}
+export type NestedLatencyMetricKey =
+  | "me_med"
+  | "me_avg"
+  | "me_max"
+  | "me_min"
+  | "me_p99"
+  | "gw_med"
+  | "gw_avg"
+  | "gw_max"
+  | "gw_min"
+  | "gw_p99";
 
+export type NestedLatencyThresholdOperator = ">" | ">=" | "<" | "<=";
+
+export type NestedLatencyThreshold = {
+  metric: NestedLatencyMetricKey;
+  operator: NestedLatencyThresholdOperator;
+  value: number;
+};
+
+// Every stat row exposes med / avg / max / min / p99 for both me and gw.
 export type NestedLatencyMetricFields = {
-  me_med: number;
-  me_avg: number;
-  me_max: number;
-  gw_med: number;
-  gw_avg: number;
-  gw_max: number;
-}
+  me_med: number | null;
+  me_avg: number | null;
+  me_max: number | null;
+  me_min: number | null;
+  me_p99: number | null;
+  gw_med: number | null;
+  gw_avg: number | null;
+  gw_max: number | null;
+  gw_min: number | null;
+  gw_p99: number | null;
+};
 
-export type GatewayLatencyItem = NestedLatencyMetricFields & {
-  name: string;
-  num_instances: number;
-  num_users: number;
+export type NestedLatencyCommonMeasures = {
   num_orders: number;
   num_orders_in_peak_times: number;
-}
+  peak_ratio: number | null;
+};
 
-export type InstanceLatencyItem = NestedLatencyMetricFields & {
-  name: string;
-  gateway_name: string;
-  partition: Partition;
-  num_users: number;
-  num_orders: number;
-  num_orders_in_peak_times: number;
-}
+export type GatewayLatencyItem = NestedLatencyMetricFields &
+  NestedLatencyCommonMeasures & {
+    name: string;
+    num_instances: number;
+    num_users: number;
+  };
 
-export type ParticipantLatencyItem = NestedLatencyMetricFields & {
-  name: string;
-  num_users: number;
-  num_orders: number;
-  num_orders_in_peak_times: number;
-}
+export type InstanceLatencyItem = NestedLatencyMetricFields &
+  NestedLatencyCommonMeasures & {
+    name: string;
+    gateway_name: string;
+    num_users: number;
+  };
 
-export type NestedUserLatencyItem = NestedLatencyMetricFields & {
-  name: string;
-  participant_name?: string;
-  gw_node?: string;
-  node_instance?: string;
-  port: string;
-  num_orders: number;
-  num_orders_in_peak_times: number;
-}
+export type ParticipantLatencyItem = NestedLatencyMetricFields &
+  NestedLatencyCommonMeasures & {
+    name: string;
+    num_users: number;
+  };
 
-export type NestedLatencySeriesPoint = NestedLatencyMetricFields & Time;
+export type NestedUserLatencyItem = NestedLatencyMetricFields &
+  NestedLatencyCommonMeasures & {
+    name: string;
+    participant_name?: string;
+    gw_node?: string;
+    node_instance?: string;
+    ports: number[];
+  };
+
+export type SeriesLatencyItem = NestedLatencyMetricFields &
+  NestedLatencyCommonMeasures & {
+    name: string;
+    num_users: number;
+  };
+
+// One minute bucket of an entity's series latency (charts).
+export type NestedLatencySeriesPoint = NestedLatencyMetricFields &
+  Time & {
+    no_ord: number;
+  };
+
+// One day of an entity's history (series-mode chart plots days, not minutes).
+export type NestedLatencyDailyHistoryPoint = NestedLatencyMetricFields & {
+  date: DateString;
+  no_ord: number;
+};
 
 export type NestedLatencySeriesIdentity = {
   entityType: NestedLatencyEntityType;
@@ -265,26 +316,59 @@ export type NestedLatencySeriesIdentity = {
   participantName?: string;
   gatewayName?: string;
   instanceName?: string;
-}
+};
 
-export type NestedLatencySeriesFilters =
-  NestedLatencyFilters & NestedLatencySeriesIdentity;
+export type NestedLatencyFilters = {
+  date: DateString;
+  minOrders: number;
+  threshold: NestedLatencyThreshold | null;
+};
 
-export type NestedGatewayInstancesFilters = NestedLatencyFilters & {
+export type NestedLatencyGridFilters = NestedLatencyFilters & {
+  queryString: string;
+};
+
+export type NestedLatencySeriesFilters = NestedLatencyFilters &
+  NestedLatencySeriesIdentity;
+
+export type NestedGatewayInstancesFilters = NestedLatencyGridFilters & {
   gatewayName: string;
-}
+};
 
-export type NestedInstanceUsersFilters = NestedLatencyFilters & {
+export type NestedInstanceUsersFilters = NestedLatencyGridFilters & {
   gatewayName: string;
   instanceName: string;
-}
+};
 
-export type NestedParticipantUsersFilters = NestedLatencyFilters & {
+export type NestedParticipantUsersFilters = NestedLatencyGridFilters & {
   participantName: string;
-}
+};
+
+export type SeriesHistoryFilters = {
+  name: string;
+  days: number;
+};
+
+// Sent to the /freshness endpoint (age of the most recent watermark).
+export type DataFreshnessInfo = {
+  date: DateString;
+  updated_at: string; // ISO 8601 timestamp
+};
+
+// Exchange-wide baseline latencies used for relative colour thresholds.
+export type ExchangeBaseline = {
+  date: DateString;
+  me_med: number | null;
+  me_p99: number | null;
+  gw_med: number | null;
+  gw_p99: number | null;
+};
 
 export type GatewayLatencyResponse = PageResponse<GatewayLatencyItem>;
 export type InstanceLatencyResponse = PageResponse<InstanceLatencyItem>;
 export type ParticipantLatencyResponse = PageResponse<ParticipantLatencyItem>;
 export type NestedUserLatencyResponse = PageResponse<NestedUserLatencyItem>;
+export type SeriesLatencyResponse = PageResponse<SeriesLatencyItem>;
 export type NestedLatencySeriesResponse = NestedLatencySeriesPoint[];
+export type NestedLatencyDailyHistoryResponse =
+  NestedLatencyDailyHistoryPoint[];

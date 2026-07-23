@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Stack } from "@mui/material";
+import type { SxProps, Theme } from "@mui/material/styles";
 import { LocalizationProvider, DatePicker } from "@mui/x-date-pickers";
 import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
 import { format } from "date-fns";
@@ -10,6 +11,9 @@ interface DateDayPickerProps {
   onDateChange: (date: string) => void;
   isLoading: boolean;
   isDisabled: boolean;
+  // Styles the picker's text field; use it to size the control per page,
+  // e.g. sx={{ width: 150 }}. Defaults to width 190.
+  sx?: SxProps<Theme>;
 }
 
 const dayLabels = ["Paz", "Pzt", "Sal", "Çar", "Per", "Cum", "Cmt"];
@@ -19,6 +23,7 @@ export function DateDayPicker({
   onDateChange,
   isLoading,
   isDisabled,
+  sx,
 }: DateDayPickerProps) {
   return (
     <LocalizationProvider dateAdapter={AdapterDateFns} adapterLocale={tr}>
@@ -38,7 +43,7 @@ export function DateDayPicker({
           slotProps={{
             textField: {
               size: "small",
-              sx: { width: 190 },
+              sx: sx ?? { width: 190 },
               // Show loading state in the text field if necessary
               disabled: isLoading || isDisabled,
             },
