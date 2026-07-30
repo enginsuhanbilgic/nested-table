@@ -1,0 +1,138 @@
+-- ============================================================================
+-- ONE-TIME MIGRATION: legacy general-stat history -> new pipeline tables
+--     stat.latency_stats_1day      -> stat.latency_daily_stat  (grp_type 'general')
+--     stat.daily_latency_stat_demo -> stat.latency_minute_stat (grp_type 'general')
+--
+-- Run ONCE, after latency_stats_pipeline.sql is deployed and BEFORE dropping
+-- the old tables (section 8 of the pipeline file). Safe to re-run: inserts
+-- are ON CONFLICT DO NOTHING, so rows produced by the new pipeline (or by a
+-- previous run of this script) always win over legacy values.
+--
+-- MAPPING NOTES
+--   * Old measures were gw_net_latency only -> they fill the gw_* columns.
+--     me_*, gw_p99 and no_ord_in_volatile stay NULL for migrated rows:
+--     "not measured back then" (the v_general_* views expose them as such).
+--   * Old key columns were nullable with no real uniqueness for NULLs ->
+--     coalesce to the new key encoding ('' / -1) and de-duplicate keeping
+--     the row with the highest no_ord (duplicates mostly came from the old
+--     NULL-key ON CONFLICT bug re-inserting groups on every run).
+--   * latency_stats_1day rows with tx_date IS NULL and demo rows with
+--     from_time IS NULL are the accumulated duplicates of that same bug --
+--     they are unusable (no date/minute) and are NOT migrated.
+--   * The old 1day proc coalesced "no measurable latency" to 0. An all-zero
+--     med/avg/min/max quartet with orders present is that artifact, not a
+--     real 0-microsecond day -> migrated as NULLs (matches new semantics).
+--   * demo.from_time is timestamp WITHOUT time zone (built via epoch() in
+--     the server TimeZone); ::timestamptz reinterprets it in the session TZ.
+--     RUN THIS WITH THE SAME TimeZone SETTING THE SERVER USES (the default
+--     if you don't override TimeZone), same assumption stat.ns_to_ts makes.
+--   * Legacy values keep their old measurement rules (stddev band, lower
+--     bound 20, message-type typo, etc.). Expect a visible step in trends at
+--     the cutover date; that is the old pipeline's bias ending, not a bug.
+-- ============================================================================
+
+BEGIN;
+
+-- ----------------------------------------------------------------------------
+-- 1. Daily history: latency_stats_1day -> latency_daily_stat ('general')
+-- ----------------------------------------------------------------------------
+INSERT INTO stat.latency_daily_stat
+      (tx_date, grp_type, protocol, partition, market, location,
+       no_ord, under_sla,
+       gw_avg, gw_p50, gw_min, gw_max)
+SELECT o.tx_date,
+       'general',
+       coalesce(o.protocol, ''),
+       coalesce(o.partition, -1)::int,
+       coalesce(o.market, ''),
+       coalesce(o.location, ''),
+       o.no_ord,
+       o.under_sla,
+       CASE WHEN o.is_zero_artifact THEN NULL ELSE o.avg_latency::numeric END,
+       CASE WHEN o.is_zero_artifact THEN NULL ELSE o.med_latency::numeric END,
+       CASE WHEN o.is_zero_artifact THEN NULL ELSE o.min_latency::bigint  END,
+       CASE WHEN o.is_zero_artifact THEN NULL ELSE o.max_latency::bigint  END
+  FROM (
+       SELECT DISTINCT ON (tx_date, coalesce(protocol, ''), coalesce(partition, -1),
+                           coalesce(market, ''), coalesce(location, ''))
+              tx_date, protocol, partition, market, location,
+              no_ord, under_sla,
+              avg_latency, med_latency, min_latency, max_latency,
+              (coalesce(no_ord, 0) > 0
+               AND coalesce(med_latency, 0) = 0 AND coalesce(avg_latency, 0) = 0
+               AND coalesce(min_latency, 0) = 0 AND coalesce(max_latency, 0) = 0)
+                  AS is_zero_artifact
+         FROM stat.latency_stats_1day
+        WHERE tx_date IS NOT NULL
+        ORDER BY tx_date, coalesce(protocol, ''), coalesce(partition, -1),
+                 coalesce(market, ''), coalesce(location, ''),
+                 no_ord DESC NULLS LAST
+       ) o
+ON CONFLICT (tx_date, grp_type, node, process, participant, user_name, series,
+             protocol, partition, market, location)
+DO NOTHING;   -- rows already built by the new pipeline are better: keep them
+
+-- ----------------------------------------------------------------------------
+-- 2. Minute history: daily_latency_stat_demo -> latency_minute_stat ('general')
+-- ----------------------------------------------------------------------------
+INSERT INTO stat.latency_minute_stat
+      (tx_date, bucket_ts, grp_type, protocol, partition, market, location,
+       no_ord, under_sla,
+       gw_avg, gw_p50, gw_min, gw_max)
+SELECT o.tx_date,
+       o.from_time::timestamptz,          -- see TimeZone note in the header
+       'general',
+       coalesce(o.protocol, ''),
+       coalesce(o.partition, -1),
+       coalesce(o.market, ''),
+       coalesce(o.location, ''),
+       o.no_ord,
+       o.under_sla,
+       o.avg::numeric,
+       o.med::numeric,
+       o.min::bigint,
+       o.max::bigint
+  FROM (
+       SELECT DISTINCT ON (tx_date, from_time, coalesce(protocol, ''),
+                           coalesce(partition, -1), coalesce(market, ''),
+                           coalesce(location, ''))
+              tx_date, from_time, protocol, partition, market, location,
+              no_ord, under_sla, avg, med, min, max
+         FROM stat.daily_latency_stat_demo
+        WHERE tx_date IS NOT NULL
+          AND from_time IS NOT NULL
+        ORDER BY tx_date, from_time, coalesce(protocol, ''),
+                 coalesce(partition, -1), coalesce(market, ''),
+                 coalesce(location, ''),
+                 no_ord DESC NULLS LAST
+       ) o
+ON CONFLICT (tx_date, grp_type, node, process, participant, user_name,
+             protocol, partition, market, location, bucket_ts)
+DO NOTHING;
+
+COMMIT;
+
+-- ----------------------------------------------------------------------------
+-- 3. Verification (compare per-day totals old vs new; small diffs = dropped
+--    NULL-key duplicate rows, which is intended)
+-- ----------------------------------------------------------------------------
+-- SELECT count(*), min(tx_date), max(tx_date)
+--   FROM stat.latency_daily_stat WHERE grp_type = 'general';
+-- SELECT count(*), min(tx_date), max(tx_date) FROM stat.latency_stats_1day;
+--
+-- SELECT count(*), min(tx_date), max(tx_date)
+--   FROM stat.latency_minute_stat WHERE grp_type = 'general';
+-- SELECT count(*), min(tx_date), max(tx_date) FROM stat.daily_latency_stat_demo;
+
+-- ----------------------------------------------------------------------------
+-- 4. IMPORTANT: retention must be widened or the purge job will EAT the
+--    migrated history. Pipeline defaults keep general minute rows 40 days
+--    and daily rows 370 days -- your history is ~3 years. Schedule the purge
+--    with explicit horizons instead, e.g. keep both ~3.5 years:
+--
+--    CALL stat.up_purge_latency_stats(8, 1300, 1300);
+--
+--    (and update the pg_cron job accordingly:
+--     SELECT cron.schedule('latency-purge', '0 5 * * *',
+--            $$CALL stat.up_purge_latency_stats(8, 1300, 1300)$$); )
+-- ----------------------------------------------------------------------------

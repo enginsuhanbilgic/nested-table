@@ -11,6 +11,8 @@ type TextInputFilterProps = {
   onChange: (nextValue: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  type?: string;
+  size?: "small" | "medium";
 };
 
 export function TextInputFilter({
@@ -19,13 +21,15 @@ export function TextInputFilter({
   onChange,
   disabled = false,
   placeholder,
+  type,
+  size = "medium",
 }: TextInputFilterProps) {
   const inputId = useId();
 
   return (
     <FormControl
       fullWidth
-      size="medium"
+      size={size}
       disabled={disabled}
     >
       <InputLabel htmlFor={inputId}>{label}</InputLabel>
@@ -34,6 +38,7 @@ export function TextInputFilter({
         label={label}
         value={value}
         placeholder={placeholder}
+        type={type}
         autoComplete="off"
         onChange={(event) => {
           onChange(event.target.value);

@@ -3,6 +3,7 @@ import { matchPath } from 'react-router-dom'
 import BarChartIcon from '@mui/icons-material/BarChart'
 import SyncAltIcon from '@mui/icons-material/SyncAlt'
 import AssessmentRoundedIcon from '@mui/icons-material/AssessmentRounded'
+import ManageSearchIcon from '@mui/icons-material/ManageSearch'
 import AnalyticsIcon from '@mui/icons-material/Analytics'
 import AdminPanelSettingsRoundedIcon from '@mui/icons-material/AdminPanelSettingsRounded'
 import { Role } from '../types/auth'
@@ -15,6 +16,7 @@ import { Role } from '../types/auth'
 
 export const ANALYTICS_PAGE_ROLES: Role[] = ['ROLE_ADMIN', 'ROLE_ILETISIM_KANALLARI']
 export const ADMIN_PAGE_ROLES: Role[] = ['ROLE_ADMIN']
+export const TRANSACTION_PAGE_ROLES: Role[] = ['ROLE_ILETISIM_KANALLARI']
 
 export interface RouteMeta {
   path: string
@@ -49,6 +51,16 @@ export const ROUTE_META: RouteMeta[] = [
     title: 'Grouped Latency',
     icon: <AssessmentRoundedIcon />,
     section: 'primary',
+  },
+  {
+    // end stays false so /transactions/:publicId (the shareable results
+    // route) inherits this entry's title and sidebar highlight.
+    path: '/transactions',
+    label: 'Transaction Search',
+    title: 'Transaction Search',
+    icon: <ManageSearchIcon />,
+    section: 'primary',
+    roles: TRANSACTION_PAGE_ROLES,
   },
   {
     path: '/analytics/page',

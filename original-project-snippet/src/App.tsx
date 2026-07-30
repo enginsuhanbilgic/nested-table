@@ -12,9 +12,15 @@ import { LatencyDailyStatsPage } from './LatencyDailyStatsPage'
 import { RttStatsPage } from './RttStatsPage'
 import { NestedLatencyPage } from './NestedLatencyPage'
 import { PageTrackingPage } from './pages/PageTrackingPage'
+import { TransactionSearchPage } from './pages/TransactionSearchPage'
+import { TransactionDetailPage } from './pages/TransactionDetailPage'
 import { PageTracker } from './components/analytics/PageTracker'
 import { RouteTitleSync } from './routes/RouteTitleSync'
-import { ADMIN_PAGE_ROLES, ANALYTICS_PAGE_ROLES } from './routes/routeMeta'
+import {
+  ADMIN_PAGE_ROLES,
+  ANALYTICS_PAGE_ROLES,
+  TRANSACTION_PAGE_ROLES,
+} from './routes/routeMeta'
 
 export default function App() {
   return (
@@ -35,6 +41,22 @@ export default function App() {
                 <Route path="/latency/daily" element={<LatencyDailyStatsPage />} />
                 <Route path="/latency/rtt" element={<RttStatsPage />} />
                 <Route path="/latency/grouped" element={<NestedLatencyPage />} />
+                <Route
+                  path="/transactions"
+                  element={
+                    <RequireRole roles={TRANSACTION_PAGE_ROLES}>
+                      <TransactionSearchPage />
+                    </RequireRole>
+                  }
+                />
+                <Route
+                  path="/transactions/:publicId"
+                  element={
+                    <RequireRole roles={TRANSACTION_PAGE_ROLES}>
+                      <TransactionDetailPage />
+                    </RequireRole>
+                  }
+                />
                 {/*
                 <Route path="/latency/user" element={<UserLatencyPage />} />
                 <Route path="/globe" element={<GlobePage />} />

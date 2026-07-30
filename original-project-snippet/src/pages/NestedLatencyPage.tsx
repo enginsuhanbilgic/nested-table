@@ -27,7 +27,6 @@ import {
   MenuItem,
   Paper,
   Select,
-  TextField,
   ToggleButton,
   ToggleButtonGroup,
   Tooltip,
@@ -1939,18 +1938,48 @@ function LatencyChartCard({
         ]
       : [];
 
+    // Legend labels can be long ("GW / instance / user"); show only the leaf
+    // segment (or the last two when leaves collide) and keep the full path in
+    // the legend tooltip.
+    const shortLabelByName = new Map<string, string>();
+    const leafCounts = new Map<string, number>();
+    for (const entity of entities) {
+      const leaf = entity.label.split(" / ").pop() ?? entity.label;
+      leafCounts.set(leaf, (leafCounts.get(leaf) ?? 0) + 1);
+    }
+    for (const entity of entities) {
+      const parts = entity.label.split(" / ");
+      const leaf = parts[parts.length - 1];
+      const short =
+        (leafCounts.get(leaf) ?? 0) > 1 && parts.length > 1
+          ? parts.slice(-2).join(" / ")
+          : leaf;
+      shortLabelByName.set(entity.label, short);
+    }
+    const PREV_SUFFIX = " (prev)";
+    const shortLegendLabel = (name: string) => {
+      const isPrev = name.endsWith(PREV_SUFFIX);
+      const base = isPrev ? name.slice(0, -PREV_SUFFIX.length) : name;
+      const short = shortLabelByName.get(base) ?? base;
+      return isPrev ? `${short}${PREV_SUFFIX}` : short;
+    };
+
     return {
       animationDuration: 300,
       color: entities.map((entity) => entity.color),
-      grid: { left: 18, right: 50, top: 42, bottom: 50, containLabel: true },
+      grid: { left: 18, right: 50, top: 64, bottom: 50, containLabel: true },
+      // The legend sits on its own row below the toolbox/clear-button band so
+      // it can never collide with them, no matter how many rows are selected.
       legend: {
         type: "scroll",
-        top: 6,
+        top: 28,
         left: 8,
-        right: 150,
+        right: 8,
         itemWidth: 16,
         itemHeight: 10,
         icon: "roundRect",
+        formatter: shortLegendLabel,
+        tooltip: { show: true },
         textStyle: {
           color: theme.palette.text.secondary,
           fontSize: 11,
@@ -2143,6 +2172,9 @@ function ThresholdControl({
   onChange: (value: NestedLatencyThreshold | null) => void;
 }) {
   const active = value !== null;
+  // The debounced input keeps its own text state; bumping this key remounts
+  // it (empty) when the threshold is cleared via the clear button.
+  const [clearNonce, setClearNonce] = useState(0);
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
       <FormControl size="small" sx={{ width: 110 }}>
@@ -2187,30 +2219,39 @@ function ThresholdControl({
           ))}
         </Select>
       </FormControl>
-      <TextField
-        size="small"
-        type="number"
-        placeholder="µs"
-        value={value?.value ?? ""}
-        onChange={(event) => {
-          const raw = event.target.value;
-          if (raw === "") {
-            onChange(null);
-            return;
-          }
-          const parsed = Number(raw);
-          if (Number.isNaN(parsed)) return;
-          onChange({
-            metric: value?.metric ?? "me_p99",
-            operator: value?.operator ?? ">",
-            value: parsed,
-          });
-        }}
-        sx={{ width: 110 }}
-      />
+      <Box sx={{ width: 110 }}>
+        <TextInputFilterWithDebounce
+          key={clearNonce}
+          label="Value"
+          placeholder="µs"
+          type="number"
+          size="small"
+          initialValue={value?.value != null ? String(value.value) : ""}
+          onDebouncedChange={(raw) => {
+            if (raw === "") {
+              if (value !== null) onChange(null);
+              return;
+            }
+            const parsed = Number(raw);
+            if (Number.isNaN(parsed)) return;
+            if (parsed === value?.value) return;
+            onChange({
+              metric: value?.metric ?? "me_p99",
+              operator: value?.operator ?? ">",
+              value: parsed,
+            });
+          }}
+        />
+      </Box>
       {active && (
         <Tooltip title="Clear threshold" disableInteractive>
-          <IconButton size="small" onClick={() => onChange(null)}>
+          <IconButton
+            size="small"
+            onClick={() => {
+              onChange(null);
+              setClearNonce((nonce: number) => nonce + 1);
+            }}
+          >
             <ClearIcon fontSize="small" />
           </IconButton>
         </Tooltip>
@@ -2972,17 +3013,18 @@ export function NestedLatencyPage() {
           </Box>
         )}
 
-        <TextField
-          size="small"
-          label="Min orders"
-          type="number"
-          value={minOrders}
-          onChange={(event) => {
-            const parsed = Number(event.target.value);
-            setMinOrders(Number.isNaN(parsed) ? 0 : Math.max(0, parsed));
-          }}
-          sx={{ width: 110 }}
-        />
+        <Box sx={{ width: 110 }}>
+          <TextInputFilterWithDebounce
+            label="Min orders"
+            type="number"
+            size="small"
+            initialValue={String(minOrders)}
+            onDebouncedChange={(raw) => {
+              const parsed = Number(raw);
+              setMinOrders(Number.isNaN(parsed) ? 0 : Math.max(0, parsed));
+            }}
+          />
+        </Box>
 
         <ThresholdControl value={threshold} onChange={setThreshold} />
 

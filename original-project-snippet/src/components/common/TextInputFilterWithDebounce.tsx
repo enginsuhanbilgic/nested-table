@@ -22,13 +22,19 @@ export function TextInputFilterWithDebounce({
   label = "Search",
   placeholder,
   disabled = false,
+  initialValue = "",
+  type,
+  size,
 }: {
   onDebouncedChange: (v: string) => void;
   label?: string;
   placeholder?: string;
   disabled?: boolean;
+  initialValue?: string;
+  type?: string;
+  size?: "small" | "medium";
 }) {
-  const [queryInput, setQueryInput] = useState("");
+  const [queryInput, setQueryInput] = useState(initialValue);
   const debouncedQuery = useDebouncedValue(queryInput, 500);
 
   useEffect(() => {
@@ -42,6 +48,8 @@ export function TextInputFilterWithDebounce({
       onChange={setQueryInput}
       placeholder={placeholder}
       disabled={disabled}
+      type={type}
+      size={size}
     />
   );
 }
