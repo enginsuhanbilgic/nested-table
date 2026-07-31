@@ -16,7 +16,6 @@ import {
     FormControl,
     IconButton,
     InputLabel,
-    LinearProgress,
     MenuItem,
     Paper,
     Select,
@@ -28,25 +27,32 @@ import {
     useTheme,
 } from "@mui/material";
 import type { ChipProps } from "@mui/material/Chip";
+import type { Theme } from "@mui/material/styles";
 import ArrowBackRoundedIcon from "@mui/icons-material/ArrowBackRounded";
 import ContentCopyRoundedIcon from "@mui/icons-material/ContentCopyRounded";
 import ReplayRoundedIcon from "@mui/icons-material/ReplayRounded";
 import {
     DataGrid,
+    type GridCellParams,
     type GridColDef,
     type GridRenderCellParams,
 } from "@mui/x-data-grid";
 
 import { ApiError } from "../services/apiClient";
+import { getExchangeBaseline } from "../services/latencyService";
 import {
     compareBigintStrings,
     createOrderSearch,
     formatInstant,
     formatNsTimestamp,
+    formatUsTimestamp,
     getOrderNeighbors,
     getOrderSearchDetail,
     nsOffsetMicros,
+    usOffsetMicros,
 } from "../services/transactionService";
+import { numberFormatter } from "../services/utilService";
+import type { ExchangeBaseline } from "../types/latency";
 import type {
     NeighborScope,
     OrderNeighbors,
@@ -59,11 +65,23 @@ import type {
 // padding; the offset *above* it is measured at runtime (see contentTop).
 const PAGE_BOTTOM_INSET = 16;
 
-// Poll cadence while the search is queued/running.
+// Poll cadence while the search is queued/running (shared links can land
+// here mid-flight; there is no progress UI, just this quiet refresh).
 const ACTIVE_POLL_MS = 1500;
 
 const WINDOW_MS_OPTIONS = [1, 5, 10, 25, 50];
 const MAX_ORDERS_OPTIONS = [50, 100, 200, 500];
+
+// Latency cell colour = ratio vs. a reference value. In the neighbors grid
+// the reference is the median of the visible rows (what "normal" looked like
+// in this exact window); the day's exchange-wide baseline (same source as
+// NestedLatencyPage) is the fallback, and the only reference for the small
+// hits grid, where a median over a 2-3 row lineage says nothing.
+const LATENCY_RATIO_THRESHOLDS = {
+    warn: 2,
+    high: 4,
+    critical: 8,
+};
 
 const STATUS_CHIP: Record<
     OrderSearchStatus,
@@ -85,6 +103,13 @@ type NeighborTarget = {
 // reference order on the scope's clock.
 type NeighborGridRow = OrderPcapItem & { offset_us: number | null };
 
+// Per-column colour references (µs) for the latency cells.
+type LatencyRefs = {
+    me: number | null;
+    gw: number | null;
+    vrd: number | null;
+};
+
 function canCompareMe(row: OrderPcapItem): boolean {
     return row.me_net_input_time !== null && row.partition !== null;
 }
@@ -96,6 +121,31 @@ function canCompareGw(row: OrderPcapItem): boolean {
         row.process !== null &&
         row.partition !== null
     );
+}
+
+function median(values: number[]): number | null {
+    if (values.length === 0) {
+        return null;
+    }
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 1
+        ? sorted[mid]
+        : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function latencyClassFor(
+    value: number | null | undefined,
+    reference: number | null,
+): string {
+    if (value == null || reference == null || reference <= 0) {
+        return "";
+    }
+    const ratio = value / reference;
+    if (ratio >= LATENCY_RATIO_THRESHOLDS.critical) return "latency-critical";
+    if (ratio >= LATENCY_RATIO_THRESHOLDS.high) return "latency-high";
+    if (ratio >= LATENCY_RATIO_THRESHOLDS.warn) return "latency-warn";
+    return "latency-good";
 }
 
 export function TransactionDetailPage() {
@@ -126,6 +176,8 @@ export function TransactionDetailPage() {
     const [neighbors, setNeighbors] = useState<OrderNeighbors | null>(null);
     const [neighborsLoading, setNeighborsLoading] = useState(false);
     const [neighborsError, setNeighborsError] = useState<string | null>(null);
+
+    const [baseline, setBaseline] = useState<ExchangeBaseline | null>(null);
 
     // Unlike RttStatsPage the ref'd box only exists once the search is DONE,
     // so the measurement effect re-attaches on status changes instead of
@@ -239,6 +291,35 @@ export function TransactionDetailPage() {
         return () => window.clearInterval(timer);
     }, [isPollingStatus, fetchDetail]);
 
+    // Exchange-wide baseline of the searched day: colour fallback (and the
+    // only reference the hits grid has).
+    const baselineDate =
+        detail?.search.status === "DONE" ? detail.search.tx_date : null;
+
+    useEffect(() => {
+        if (!baselineDate) {
+            setBaseline(null);
+            return;
+        }
+
+        let cancelled = false;
+        void getExchangeBaseline(baselineDate)
+            .then((next) => {
+                if (!cancelled) {
+                    setBaseline(next);
+                }
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setBaseline(null);
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [baselineDate]);
+
     // Neighbors are computed live server-side; refetch whenever the target
     // row/scope or the window/max controls change.
     useEffect(() => {
@@ -288,9 +369,9 @@ export function TransactionDetailPage() {
         };
     }, [publicId, neighborTarget, windowMs, maxOrders]);
 
-    // Re-running is just createOrderSearch again: the backend reuses within
-    // the TTL (same public_id -> refetch) or queues a fresh execution
-    // (different public_id -> navigate to it).
+    // Re-running is just createOrderSearch again: DONE within the TTL is
+    // reused (same public_id -> refetch); anything else queues a fresh
+    // execution (different public_id -> navigate to it).
     const handleReSearch = async (txDate: string) => {
         const search = detail?.search;
         if (!search) {
@@ -348,16 +429,53 @@ export function TransactionDetailPage() {
                 ? reference?.me_net_input_time
                 : reference?.gw_net_input_time;
 
-        return neighbors.rows.map((row) => ({
-            ...row,
-            offset_us: nsOffsetMicros(
-                neighbors.scope === "me"
-                    ? row.me_net_input_time
-                    : row.gw_net_input_time,
-                referenceTime,
-            ),
-        }));
+        // TEMPORARY: raw data currently repeats commit_ids (uniqueness fix
+        // pending upstream); the first occurrence wins so commit_id stays a
+        // valid unique row id. Remove once the source data is fixed.
+        const seen = new Set<string>();
+        const rows: NeighborGridRow[] = [];
+        for (const row of neighbors.rows) {
+            if (seen.has(row.commit_id)) {
+                continue;
+            }
+            seen.add(row.commit_id);
+            rows.push({
+                ...row,
+                // ME clock is ns, GW clock is µs -- each scope gets its helper.
+                offset_us:
+                    neighbors.scope === "me"
+                        ? nsOffsetMicros(row.me_net_input_time, referenceTime)
+                        : usOffsetMicros(row.gw_net_input_time, referenceTime),
+            });
+        }
+        return rows;
     }, [neighbors]);
+
+    // Colour references: neighbor grid uses the window's own medians with the
+    // daily baseline as fallback; the hits grid uses the baseline only.
+    const neighborRefs = useMemo<LatencyRefs>(() => {
+        const collect = (pick: (row: NeighborGridRow) => number | null) =>
+            median(
+                neighborRows
+                    .map(pick)
+                    .filter((value): value is number => value !== null),
+            );
+
+        return {
+            me: collect((row) => row.me_net_latency) ?? baseline?.me_med ?? null,
+            gw: collect((row) => row.gw_net_latency) ?? baseline?.gw_med ?? null,
+            vrd: collect((row) => row.me_vrd_latency),
+        };
+    }, [neighborRows, baseline]);
+
+    const hitRefs = useMemo<LatencyRefs>(
+        () => ({
+            me: baseline?.me_med ?? null,
+            gw: baseline?.gw_med ?? null,
+            vrd: null,
+        }),
+        [baseline],
+    );
 
     const pcapDetailColumns = useMemo<GridColDef[]>(
         () => [
@@ -444,9 +562,9 @@ export function TransactionDetailPage() {
                     );
                 },
             },
-            ...basePcapColumns(),
+            ...basePcapColumns(hitRefs),
         ],
-        [neighborTarget],
+        [neighborTarget, hitRefs],
     );
 
     const neighborColumns = useMemo<GridColDef[]>(
@@ -462,12 +580,13 @@ export function TransactionDetailPage() {
                     if (value === null) {
                         return "—";
                     }
-                    return value > 0 ? `+${value}` : `${value}`;
+                    const text = numberFormatter.format(value);
+                    return value > 0 ? `+${text}` : text;
                 },
             },
-            ...basePcapColumns(),
+            ...basePcapColumns(neighborRefs),
         ],
-        [],
+        [neighborRefs],
     );
 
     const search = detail?.search ?? null;
@@ -536,12 +655,7 @@ export function TransactionDetailPage() {
                             <Chip
                                 size="small"
                                 color={statusChip.color}
-                                label={
-                                    search?.status === "QUEUED" &&
-                                    search.queue_position
-                                        ? `${statusChip.label} #${search.queue_position}`
-                                        : statusChip.label
-                                }
+                                label={statusChip.label}
                                 variant={isDark ? "outlined" : "filled"}
                             />
                         )}
@@ -612,30 +726,13 @@ export function TransactionDetailPage() {
                     </Box>
                 )}
 
-                {/* Queued / running: indeterminate progress + live status */}
+                {/* In-flight (reachable via shared links): no progress UI,
+                    the page just refreshes itself until the search finishes. */}
                 {search && isActiveSearch && (
-                    <Paper
-                        sx={{
-                            p: 3,
-                            width: "100%",
-                            borderRadius: 1,
-                            border: `1px solid ${theme.palette.divider}`,
-                            bgcolor: "background.paper",
-                        }}
-                    >
-                        <Stack sx={{ gap: 1.5 }}>
-                            <Typography variant="body2">
-                                {search.status === "QUEUED"
-                                    ? `Waiting in queue${search.queue_position ? ` (position ${search.queue_position})` : ""}…`
-                                    : "Searching me_pcap…"}
-                            </Typography>
-                            <LinearProgress />
-                            <Typography variant="caption" color="text.secondary">
-                                You can leave this page — the search keeps
-                                running and stays in your history.
-                            </Typography>
-                        </Stack>
-                    </Paper>
+                    <Alert severity="info" sx={{ width: "100%" }}>
+                        This search is still being processed — the results will
+                        appear here automatically when it finishes.
+                    </Alert>
                 )}
 
                 {/* Not found: offer the dates that DO contain this order */}
@@ -726,7 +823,7 @@ export function TransactionDetailPage() {
                                 hideFooter
                                 density="compact"
                                 disableColumnMenu
-                                sx={pcapGridSx(isDark)}
+                                sx={pcapGridSx(theme)}
                             />
                         </Paper>
 
@@ -799,6 +896,7 @@ export function TransactionDetailPage() {
                                                     }
                                                     /side ·{" "}
                                                     {neighborRows.length} row(s)
+                                                    · colour: vs window median
                                                 </Typography>
                                             )}
                                         </>
@@ -915,7 +1013,7 @@ export function TransactionDetailPage() {
                                                 : ""
                                         }
                                         sx={{
-                                            ...pcapGridSx(isDark),
+                                            ...pcapGridSx(theme),
                                             // The searched order, rendered in
                                             // place among its neighbors.
                                             "& .MuiDataGrid-row.row-reference":
@@ -974,10 +1072,13 @@ export function TransactionDetailPage() {
     );
 }
 
-// Shared me_pcap column set of the hits and neighbors grids. Ids and ns
-// timestamps are bigint-safe strings, so numeric columns get an explicit
-// BigInt comparator (client-side sorting).
-function basePcapColumns(): GridColDef[] {
+// Shared me_pcap column set of the hits and neighbors grids: times and
+// latencies come right after the commit id (that is what the page is for);
+// descriptive columns (msg type, side, partition, ...) sit to the right.
+// Ids and epoch timestamps are bigint-safe strings, so numeric columns get an
+// explicit BigInt comparator (client-side sorting). Two clocks: me/vrd times
+// are ns, gw times are µs -- hence the two time-column builders.
+function basePcapColumns(refs: LatencyRefs): GridColDef[] {
     const nsTimeColumn = (
         field: keyof OrderPcapItem & string,
         headerName: string,
@@ -992,20 +1093,41 @@ function basePcapColumns(): GridColDef[] {
             ),
     });
 
+    const usTimeColumn = (
+        field: keyof OrderPcapItem & string,
+        headerName: string,
+    ): GridColDef => ({
+        field,
+        headerName,
+        width: 150,
+        sortComparator: compareBigintStrings,
+        renderCell: (params: GridRenderCellParams) =>
+            formatUsTimestamp(
+                (params.row as OrderPcapItem)[field] as string | null,
+            ),
+    });
+
     const latencyColumn = (
         field: keyof OrderPcapItem & string,
         headerName: string,
+        reference: number | null,
     ): GridColDef => ({
         field,
         headerName,
         width: 110,
         align: "right",
         headerAlign: "right",
+        cellClassName: (params: GridCellParams) => {
+            const value = (params.row as OrderPcapItem)[field] as
+                | number
+                | null;
+            return `latency-cell ${latencyClassFor(value, reference)}`;
+        },
         renderCell: (params: GridRenderCellParams) => {
             const value = (params.row as OrderPcapItem)[field] as
                 | number
                 | null;
-            return value === null ? "—" : value;
+            return value === null ? "—" : numberFormatter.format(value);
         },
     });
 
@@ -1016,31 +1138,26 @@ function basePcapColumns(): GridColDef[] {
             width: 170,
             sortComparator: compareBigintStrings,
         },
-        {
-            field: "input_message_type",
-            headerName: "Msg Type",
-            width: 110,
-        },
-        { field: "side", headerName: "Side", width: 70 },
-        { field: "series", headerName: "Series", width: 130 },
+        usTimeColumn("gw_net_input_time", "GW In"),
+        nsTimeColumn("me_net_input_time", "ME In"),
+        latencyColumn("gw_net_latency", "GW Lat (µs)", refs.gw),
+        latencyColumn("me_net_latency", "ME Lat (µs)", refs.me),
+        latencyColumn("me_vrd_latency", "VRD Lat (µs)", refs.vrd),
         { field: "user_name", headerName: "User", width: 130 },
         { field: "participant", headerName: "Participant", width: 120 },
+        { field: "series", headerName: "Series", width: 130 },
+        { field: "input_message_type", headerName: "Msg Type", width: 110 },
+        { field: "side", headerName: "Side", width: 70 },
+        { field: "partition", headerName: "Part", width: 70 },
         { field: "node", headerName: "Node", width: 110 },
         { field: "process", headerName: "Process", width: 110 },
-        { field: "partition", headerName: "Part", width: 70 },
-        nsTimeColumn("gw_net_input_time", "GW In"),
-        nsTimeColumn("me_net_input_time", "ME In"),
-        latencyColumn("gw_net_latency", "GW Lat (µs)"),
-        latencyColumn("me_net_latency", "ME Lat (µs)"),
-        latencyColumn("me_vrd_latency", "VRD Lat (µs)"),
-        latencyColumn("me_asic_latency", "ASIC Lat (µs)"),
         { field: "connector_port", headerName: "Port", width: 90 },
         { field: "status", headerName: "Status", width: 90 },
         { field: "account_id", headerName: "Account", width: 110 },
     ];
 }
 
-function pcapGridSx(isDark: boolean) {
+function pcapGridSx(theme: Theme) {
     return {
         border: 0,
         fontSize: "0.83rem",
@@ -1054,9 +1171,21 @@ function pcapGridSx(isDark: boolean) {
             outline: "none",
         },
         "& .MuiDataGrid-row:hover": {
-            bgcolor: isDark
-                ? "rgba(144, 202, 249, 0.10)"
-                : "rgba(25, 118, 210, 0.08)",
+            bgcolor: alpha(
+                theme.palette.primary.main,
+                theme.palette.mode === "dark" ? 0.12 : 0.08,
+            ),
+        },
+        // Same class vocabulary as NestedLatencyPage's latency cells.
+        "& .latency-cell": {
+            fontWeight: 750,
+        },
+        "& .latency-good": { color: theme.palette.success.main },
+        "& .latency-warn": { color: theme.palette.warning.dark },
+        "& .latency-high": { color: theme.palette.error.main },
+        "& .latency-critical": {
+            color: theme.palette.error.dark,
+            fontWeight: 850,
         },
     } as const;
 }

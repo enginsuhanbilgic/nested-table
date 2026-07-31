@@ -91,10 +91,12 @@ export async function getOrderNeighbors(
 }
 
 ///
-/// bigint-safe helpers (ids and ns timestamps arrive as strings)
+/// bigint-safe helpers (ids and epoch timestamps arrive as strings).
+/// Two clocks: me_net_* / me_vrd_* fields are NANOSECONDS, gw_net_* fields
+/// are MICROSECONDS -- pick the matching formatter/offset helper.
 ///
 
-// "1753871422123456789" -> "10:30:22.123456" (local time, µs precision).
+// "1753871422123456789" (ns) -> "10:30:22.123456" (local time, µs precision).
 export function formatNsTimestamp(ns: string | null | undefined): string {
   if (!ns) {
     return "—";
@@ -118,9 +120,33 @@ export function formatNsTimestamp(ns: string | null | undefined): string {
   }
 }
 
-// Signed distance from the reference order in microseconds; null when either
-// timestamp is missing. Safe: the difference is window-sized even though the
-// operands are not.
+// "1753871422123456" (µs) -> "10:30:22.123456" (local time, µs precision).
+export function formatUsTimestamp(us: string | null | undefined): string {
+  if (!us) {
+    return "—";
+  }
+
+  try {
+    const value = BigInt(us);
+    const millis = Number(value / 1_000n);
+    const microsInMilli = Number(value % 1_000n);
+    const date = new Date(millis);
+
+    const hh = String(date.getHours()).padStart(2, "0");
+    const mm = String(date.getMinutes()).padStart(2, "0");
+    const ss = String(date.getSeconds()).padStart(2, "0");
+    const ms = String(date.getMilliseconds()).padStart(3, "0");
+    const usPart = String(microsInMilli).padStart(3, "0");
+
+    return `${hh}:${mm}:${ss}.${ms}${usPart}`;
+  } catch {
+    return us;
+  }
+}
+
+// Signed distance from the reference order in microseconds, both operands on
+// the NANOSECOND clock; null when either timestamp is missing. Safe: the
+// difference is window-sized even though the operands are not.
 export function nsOffsetMicros(
   ns: string | null | undefined,
   referenceNs: string | null | undefined,
@@ -131,6 +157,22 @@ export function nsOffsetMicros(
 
   try {
     return Number((BigInt(ns) - BigInt(referenceNs)) / 1_000n);
+  } catch {
+    return null;
+  }
+}
+
+// Same, but both operands already on the MICROSECOND clock (gw_net_* fields).
+export function usOffsetMicros(
+  us: string | null | undefined,
+  referenceUs: string | null | undefined,
+): number | null {
+  if (!us || !referenceUs) {
+    return null;
+  }
+
+  try {
+    return Number(BigInt(us) - BigInt(referenceUs));
   } catch {
     return null;
   }

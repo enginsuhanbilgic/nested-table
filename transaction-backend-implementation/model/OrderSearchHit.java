@@ -104,12 +104,6 @@ public class OrderSearchHit {
     @Column(name = "gw_net_output_time")
     private Long gwNetOutputTime;
 
-    @Column(name = "me_asic_input_time")
-    private Long meAsicInputTime;
-
-    @Column(name = "me_asic_output_time")
-    private Long meAsicOutputTime;
-
     @Column(name = "me_vrd_latency")
     private Long meVrdLatency;
 
@@ -118,9 +112,6 @@ public class OrderSearchHit {
 
     @Column(name = "gw_net_latency")
     private Long gwNetLatency;
-
-    @Column(name = "me_asic_latency")
-    private Long meAsicLatency;
 
     @NoArgsConstructor
     @AllArgsConstructor

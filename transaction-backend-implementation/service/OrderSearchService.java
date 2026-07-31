@@ -46,6 +46,20 @@ public class OrderSearchService {
     private static final int MAX_WINDOW_MS = 50;
     private static final int MAX_ORDERS_PER_SIDE = 500;
 
+    /** NOT_FOUND / FAILED are never served from cache. */
+    private static final List<OrderSearchStatus> REUSABLE_STATUSES =
+            List.of(OrderSearchStatus.QUEUED, OrderSearchStatus.RUNNING,
+                    OrderSearchStatus.DONE);
+
+    /**
+     * Back-pressure: a single user may have at most this many searches
+     * waiting/running at once (the worker is deliberately serialized, so an
+     * unbounded queue would let one user starve everyone else).
+     */
+    private static final List<OrderSearchStatus> IN_FLIGHT_STATUSES =
+            List.of(OrderSearchStatus.QUEUED, OrderSearchStatus.RUNNING);
+    private static final int MAX_IN_FLIGHT_PER_USER = 5;
+
     /**
      * History-grid sort fields -> query property paths (the query roots at
      * OrderSearchRequest, so search columns are nested). created_at sorts by
@@ -79,10 +93,7 @@ public class OrderSearchService {
             final OrderSearchRequest request,
             final UUID userId
     ) {
-        if (request == null || request.orderId() == null) {
-            throw new ResponseStatusException(
-                    HttpStatus.BAD_REQUEST, "order_id is required");
-        }
+        final long orderId = parseOrderId(request);
 
         LocalDate today = LocalDate.now();
         LocalDate txDate = request.txDate() != null ? request.txDate() : today;
@@ -92,15 +103,29 @@ public class OrderSearchService {
         }
 
         OrderSearch search;
+        // Only QUEUED/RUNNING/DONE can ever be reused: NOT_FOUND and FAILED
+        // are not cached, so re-searching them starts fresh immediately.
         Optional<OrderSearch> latest = orderSearchRepository
-                .findFirstByOrderIdAndTxDateAndStatusNotOrderByCreatedAtDescIdDesc(
-                        request.orderId(), txDate, OrderSearchStatus.FAILED);
+                .findFirstByOrderIdAndTxDateAndStatusInOrderByCreatedAtDescIdDesc(
+                        orderId, txDate, REUSABLE_STATUSES);
         if (latest.isPresent() && isReusable(latest.get(), today)) {
             search = latest.get();
         } else {
+            // The cap only guards NEW executions -- joining an existing
+            // search (the reuse path above) is always allowed.
+            long inFlight = orderSearchRepository
+                    .countByRequestedByAndStatusIn(userId, IN_FLIGHT_STATUSES);
+            if (inFlight >= MAX_IN_FLIGHT_PER_USER) {
+                throw new ResponseStatusException(
+                        HttpStatus.TOO_MANY_REQUESTS,
+                        "you already have " + MAX_IN_FLIGHT_PER_USER
+                                + " searches in progress; "
+                                + "wait for them to finish");
+            }
+
             OrderSearch fresh = new OrderSearch();
             fresh.setPublicId(UUID.randomUUID());
-            fresh.setOrderId(request.orderId());
+            fresh.setOrderId(orderId);
             fresh.setTxDate(txDate);
             fresh.setStatus(OrderSearchStatus.QUEUED);
             fresh.setRequestedBy(userId);
@@ -115,14 +140,38 @@ public class OrderSearchService {
                 // finished by the time we look, and its fresh result is
                 // exactly what this caller wants.
                 search = orderSearchRepository
-                        .findFirstByOrderIdAndTxDateAndStatusNotOrderByCreatedAtDescIdDesc(
-                                request.orderId(), txDate, OrderSearchStatus.FAILED)
+                        .findFirstByOrderIdAndTxDateAndStatusInOrderByCreatedAtDescIdDesc(
+                                orderId, txDate, REUSABLE_STATUSES)
                         .orElseThrow(() -> e);
             }
         }
 
         orderSearchRequestRepository.recordRequest(search.getId(), userId);
         return toResponse(search, Instant.now());
+    }
+
+    /**
+     * order_id arrives as a string (bigint-safe JSON contract); reject
+     * anything that is not a positive 64-bit number with a clean 400 instead
+     * of letting it surface as a deserialization or database error.
+     */
+    private static long parseOrderId(final OrderSearchRequest request) {
+        if (request == null || request.orderId() == null
+                || request.orderId().isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "order_id is required");
+        }
+
+        try {
+            long value = Long.parseLong(request.orderId().trim());
+            if (value <= 0) {
+                throw new NumberFormatException("non-positive");
+            }
+            return value;
+        } catch (NumberFormatException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "order_id must be a positive numeric id");
+        }
     }
 
     /**
@@ -145,13 +194,18 @@ public class OrderSearchService {
         return new OrderSearchDetailResponse(toResponse(search, null), hits);
     }
 
-    /** The caller's own searches only -- there is no global history view. */
+    /**
+     * The caller's own searches only -- there is no global history view, and
+     * only DONE searches are listed (in-flight ones are transient, and
+     * NOT_FOUND/FAILED are hidden so the user can immediately re-search).
+     */
     public Page<OrderSearchResponse> getHistory(
             final UUID userId,
             final Pageable pageable
     ) {
         return orderSearchRequestRepository
-                .findHistory(userId, remapHistorySort(pageable))
+                .findHistory(userId, OrderSearchStatus.DONE,
+                        remapHistorySort(pageable))
                 .map(request -> toResponse(
                         request.getSearch(), request.getCreatedAt()));
     }
@@ -166,7 +220,10 @@ public class OrderSearchService {
         NeighborScope scope = parseScope(scopeParam);
         int window = clamp(windowMs, 1, MAX_WINDOW_MS);
         int limitPerSide = clamp(maxOrders, 1, MAX_ORDERS_PER_SIDE);
+        // Two clocks: ME timestamps are nanoseconds, GW timestamps are
+        // MICROSECONDS -- each scope gets the window in its own unit.
         long windowNs = window * 1_000_000L;
+        long windowUs = window * 1_000L;
 
         OrderSearch search = findByPublicIdOr404(publicId);
         OrderSearchHit ref = orderSearchHitRepository
@@ -203,7 +260,7 @@ public class OrderSearchService {
             neighbors = mePcapQueryRepository.findGwNeighbors(
                     schema, ref.getTxDate(), ref.getNode(), ref.getProcess(),
                     ref.getPartition(), ref.getGwNetInputTime(), commitId,
-                    windowNs, limitPerSide);
+                    windowUs, limitPerSide);
         }
 
         List<OrderPcapResponse> rows = new ArrayList<>(neighbors.size() + 1);
@@ -263,6 +320,9 @@ public class OrderSearchService {
         if (search.getStatus() == OrderSearchStatus.QUEUED
                 || search.getStatus() == OrderSearchStatus.RUNNING) {
             return true;
+        }
+        if (search.getStatus() != OrderSearchStatus.DONE) {
+            return false;   // NOT_FOUND / FAILED: never cached
         }
         if (search.getTxDate().isBefore(today)) {
             return true;    // closed trading day: results are immutable
@@ -361,9 +421,8 @@ public class OrderSearchService {
                 hit.getMeVrdInputTime(), hit.getMeVrdOutputTime(),
                 hit.getMeNetInputTime(), hit.getMeNetOutputTime(),
                 hit.getGwNetInputTime(), hit.getGwNetOutputTime(),
-                hit.getMeAsicInputTime(), hit.getMeAsicOutputTime(),
                 hit.getMeVrdLatency(), hit.getMeNetLatency(),
-                hit.getGwNetLatency(), hit.getMeAsicLatency()
+                hit.getGwNetLatency()
         );
     }
 
@@ -379,9 +438,8 @@ public class OrderSearchService {
                 row.meVrdInputTime(), row.meVrdOutputTime(),
                 row.meNetInputTime(), row.meNetOutputTime(),
                 row.gwNetInputTime(), row.gwNetOutputTime(),
-                row.meAsicInputTime(), row.meAsicOutputTime(),
                 row.meVrdLatency(), row.meNetLatency(),
-                row.gwNetLatency(), row.meAsicLatency()
+                row.gwNetLatency()
         );
     }
 }

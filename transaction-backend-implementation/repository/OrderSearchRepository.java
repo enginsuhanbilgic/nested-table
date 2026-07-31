@@ -20,12 +20,6 @@ public interface OrderSearchRepository extends JpaRepository<OrderSearch, Long> 
 
     Page<OrderSearch> findByRequestedBy(UUID requestedBy, Pageable pageable);
 
-    Optional<OrderSearch> findFirstByOrderIdAndTxDateAndStatusNotOrderByCreatedAtDescIdDesc(
-            Long orderId,
-            LocalDate txDate,
-            OrderSearchStatus status
-    );
-
     Optional<OrderSearch> findFirstByOrderIdAndTxDateAndStatusInOrderByCreatedAtDescIdDesc(
             Long orderId,
             LocalDate txDate,
@@ -33,6 +27,11 @@ public interface OrderSearchRepository extends JpaRepository<OrderSearch, Long> 
     );
 
     long countByStatusAndIdLessThan(OrderSearchStatus status, Long id);
+
+    long countByRequestedByAndStatusIn(
+            UUID requestedBy,
+            Collection<OrderSearchStatus> statuses
+    );
 
     List<OrderSearch> findByStatusAndStartedAtBefore(OrderSearchStatus status, Instant before);
 

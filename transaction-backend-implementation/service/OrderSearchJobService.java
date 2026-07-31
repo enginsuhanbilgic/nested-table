@@ -178,12 +178,9 @@ public class OrderSearchJobService {
                 .meNetOutputTime(row.meNetOutputTime())
                 .gwNetInputTime(row.gwNetInputTime())
                 .gwNetOutputTime(row.gwNetOutputTime())
-                .meAsicInputTime(row.meAsicInputTime())
-                .meAsicOutputTime(row.meAsicOutputTime())
                 .meVrdLatency(row.meVrdLatency())
                 .meNetLatency(row.meNetLatency())
                 .gwNetLatency(row.gwNetLatency())
-                .meAsicLatency(row.meAsicLatency())
                 .build();
     }
 }

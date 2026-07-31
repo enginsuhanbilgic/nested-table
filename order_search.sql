@@ -22,6 +22,9 @@
 --     applies the exact gw_net_input_time range as a filter. Rows that never
 --     reached the ME (me_net_input_time IS NULL) are excluded from neighbor
 --     lists by design, so the trick loses nothing.
+--     UNITS: gw_net_* times are MICROSECONDS since epoch while me_net_* /
+--     me_vrd_* times are NANOSECONDS -- the backend scales the gw window
+--     x1000 before applying it to the me index range.
 --
 -- DEPLOYMENT ORDER: run AFTER latency_stats_pipeline.sql -- section 3 below
 -- REDEFINES stat.up_purge_latency_stats with a fourth parameter.
@@ -111,10 +114,10 @@ ON CONFLICT DO NOTHING;
 
 -- ============================================================================
 -- 2. MATCHED-ORDER SNAPSHOTS
---    Column set/types mirror me_pcap (client_id_hex intentionally omitted).
---    commit_id is confirmed globally unique, but tx_date is kept: neighbor
---    queries need it for schema routing (public vs his) and his partition
---    pruning.
+--    Column set/types mirror me_pcap (client_id_hex and the unused me_asic_*
+--    columns intentionally omitted). commit_id is confirmed globally unique,
+--    but tx_date is kept: neighbor queries need it for schema routing
+--    (public vs his) and his partition pruning.
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS stat.order_search_hit (
@@ -144,31 +147,40 @@ CREATE TABLE IF NOT EXISTS stat.order_search_hit (
     me_net_output_time  bigint,
     gw_net_input_time   bigint,
     gw_net_output_time  bigint,
-    me_asic_input_time  bigint,
-    me_asic_output_time bigint,
     me_vrd_latency      bigint,
     me_net_latency      bigint,
     gw_net_latency      bigint,
-    me_asic_latency     bigint,
     PRIMARY KEY (search_id, commit_id)
 );
+
+-- In-place migration for deployments created before the asic columns were
+-- dropped from the feature (no-ops on fresh installs).
+ALTER TABLE stat.order_search_hit
+    DROP COLUMN IF EXISTS me_asic_input_time,
+    DROP COLUMN IF EXISTS me_asic_output_time,
+    DROP COLUMN IF EXISTS me_asic_latency;
 
 
 -- ============================================================================
 -- 3. RETENTION
---    Redefines the pipeline's purge procedure with a fourth parameter so the
---    same nightly CALL stat.up_purge_latency_stats() also removes searches
---    older than 14 days (hits follow via ON DELETE CASCADE). Supersedes the
---    3-parameter version in latency_stats_pipeline.sql section 5.
+--    Redefines the pipeline's purge procedure so the same nightly
+--    CALL stat.up_purge_latency_stats() also removes searches: DONE rows
+--    after 14 days, and NOT_FOUND/FAILED rows after just a few hours --
+--    those are invisible to users (never cached, never listed), so junk
+--    searches must not linger. Hits/requests follow via ON DELETE CASCADE.
+--    Supersedes the 3-parameter version in latency_stats_pipeline.sql
+--    section 5 (and the earlier 4-parameter revision of this file).
 -- ============================================================================
 
 DROP PROCEDURE IF EXISTS stat.up_purge_latency_stats(int, int, int);
+DROP PROCEDURE IF EXISTS stat.up_purge_latency_stats(int, int, int, int);
 
 CREATE OR REPLACE PROCEDURE stat.up_purge_latency_stats(
     p_keep_days_minute         int DEFAULT 8,
     p_keep_days_daily          int DEFAULT 370,
     p_keep_days_minute_general int DEFAULT 40,
-    p_keep_days_order_search   int DEFAULT 14)
+    p_keep_days_order_search   int DEFAULT 14,
+    p_keep_hours_dead_search   int DEFAULT 6)
 LANGUAGE plpgsql
 AS $proc$
 BEGIN
@@ -181,6 +193,9 @@ BEGIN
      WHERE tx_date < current_date - p_keep_days_minute;
     DELETE FROM stat.latency_daily_stat
      WHERE tx_date < current_date - p_keep_days_daily;
+    DELETE FROM stat.order_search
+     WHERE status IN ('NOT_FOUND', 'FAILED')
+       AND created_at < now() - make_interval(hours => p_keep_hours_dead_search);
     DELETE FROM stat.order_search
      WHERE created_at < now() - make_interval(days => p_keep_days_order_search);
     RAISE INFO '% : purge done.', now();

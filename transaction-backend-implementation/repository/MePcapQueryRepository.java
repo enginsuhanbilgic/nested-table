@@ -16,6 +16,10 @@ import java.util.List;
  * chosen per query, and the neighbor queries need UNION ALL + per-side LIMIT
  * shapes Criteria cannot express. The schema name is taken from the
  * {@link Schema} enum only -- never from user input.
+ *
+ * UNITS: me_net_* / me_vrd_* timestamps are NANOSECONDS since epoch;
+ * gw_net_* timestamps are MICROSECONDS since epoch; all *_latency columns
+ * are microseconds. The GW neighbor query converts between the two clocks.
  */
 @Repository
 @RequiredArgsConstructor
@@ -42,7 +46,8 @@ public class MePcapQueryRepository {
      * time (microseconds in practice). Widening the me_net_input_time index
      * range by this slack lets GW-windowed queries run off the existing
      * (tx_date, me_net_input_time) indexes with an exact gw filter on top,
-     * so no gw_net_input_time index is needed on the hot table.
+     * so no gw_net_input_time index is needed on the hot table. The gw side
+     * is a µs clock, so it is scaled to ns (x1000) before widening.
      */
     private static final long GW_TO_ME_SLACK_NS = 1_000_000_000L;
 
@@ -54,9 +59,7 @@ public class MePcapQueryRepository {
             p.me_vrd_input_time, p.me_vrd_output_time,
             p.me_net_input_time, p.me_net_output_time,
             p.gw_net_input_time, p.gw_net_output_time,
-            p.me_asic_input_time, p.me_asic_output_time,
-            p.me_vrd_latency, p.me_net_latency, p.gw_net_latency,
-            p.me_asic_latency""";
+            p.me_vrd_latency, p.me_net_latency, p.gw_net_latency""";
 
     private static final String NOT_PRV =
             "(p.participant IS NULL OR p.participant NOT LIKE '%PRV%')";
@@ -157,6 +160,10 @@ public class MePcapQueryRepository {
      * me_net_input_time range (see GW_TO_ME_SLACK_NS). Rows that never
      * reached the ME have me_net_input_time NULL and are excluded by the
      * range predicate itself -- exactly the agreed behavior.
+     *
+     * CLOCKS: gw_net_input_time is MICROSECONDS, me_net_input_time is
+     * NANOSECONDS -- the gw window is applied in µs, and the me index range
+     * is that same window scaled x1000 (plus the slack).
      */
     public List<MePcapRow> findGwNeighbors(
             final Schema schema,
@@ -164,9 +171,9 @@ public class MePcapQueryRepository {
             final String node,
             final String process,
             final short partition,
-            final long refGwInputNs,
+            final long refGwInputUs,
             final long refCommitId,
-            final long windowNs,
+            final long windowUs,
             final int limitPerSide
     ) {
         String base = " FROM " + schema.table() + " p"
@@ -175,8 +182,8 @@ public class MePcapQueryRepository {
                 + "   AND p.me_net_input_time >= ? AND p.me_net_input_time <= ?"
                 + "   AND " + NOT_PRV;
 
-        long meLo = refGwInputNs - windowNs;
-        long meHi = refGwInputNs + windowNs + GW_TO_ME_SLACK_NS;
+        long meLo = (refGwInputUs - windowUs) * 1_000L;
+        long meHi = (refGwInputUs + windowUs) * 1_000L + GW_TO_ME_SLACK_NS;
 
         String sql = "SELECT * FROM ("
                 + "(SELECT " + COLS + base
@@ -193,9 +200,9 @@ public class MePcapQueryRepository {
                 sql,
                 ROW_MAPPER,
                 txDate, node, process, partition, meLo, meHi,
-                refGwInputNs - windowNs, refGwInputNs, limitPerSide,
+                refGwInputUs - windowUs, refGwInputUs, limitPerSide,
                 txDate, node, process, partition, meLo, meHi,
-                refGwInputNs, refGwInputNs + windowNs, refCommitId, limitPerSide
+                refGwInputUs, refGwInputUs + windowUs, refCommitId, limitPerSide
         );
     }
 
@@ -226,12 +233,9 @@ public class MePcapQueryRepository {
                 rs.getObject("me_net_output_time", Long.class),
                 rs.getObject("gw_net_input_time", Long.class),
                 rs.getObject("gw_net_output_time", Long.class),
-                rs.getObject("me_asic_input_time", Long.class),
-                rs.getObject("me_asic_output_time", Long.class),
                 rs.getObject("me_vrd_latency", Long.class),
                 rs.getObject("me_net_latency", Long.class),
-                rs.getObject("gw_net_latency", Long.class),
-                rs.getObject("me_asic_latency", Long.class)
+                rs.getObject("gw_net_latency", Long.class)
         );
     }
 }

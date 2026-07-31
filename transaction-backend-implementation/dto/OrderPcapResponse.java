@@ -8,14 +8,16 @@ import java.time.LocalDate;
 
 /**
  * One me_pcap row for display -- used both for the searched order's hits and
- * for neighbor rows, so the two grids share one column contract. *_time
- * fields are nanoseconds since epoch, *_latency fields are microseconds.
+ * for neighbor rows, so the two grids share one column contract.
+ * me_net_* / me_vrd_* times are nanoseconds since epoch, gw_net_* times are
+ * MICROSECONDS since epoch, *_latency fields are microseconds.
  *
- * Ids and nanosecond timestamps are serialized as JSON STRINGS on purpose:
- * their values exceed JavaScript's Number.MAX_SAFE_INTEGER (2^53), so a
- * numeric JSON encoding would silently corrupt them in the browser. The
- * frontend types them as string and does arithmetic with BigInt. Latencies
- * are microsecond-scale and stay numeric.
+ * Ids and epoch timestamps are serialized as JSON STRINGS on purpose: the
+ * ns values exceed JavaScript's Number.MAX_SAFE_INTEGER (2^53), so a numeric
+ * JSON encoding would silently corrupt them in the browser (gw µs values
+ * would fit, but stay strings for one consistent contract). The frontend
+ * types them as string and does arithmetic with BigInt. Latencies are
+ * microsecond-scale and stay numeric.
  */
 public record OrderPcapResponse(
         @JsonProperty("commit_id")
@@ -50,13 +52,8 @@ public record OrderPcapResponse(
         @JsonSerialize(using = ToStringSerializer.class) Long gwNetInputTime,
         @JsonProperty("gw_net_output_time")
         @JsonSerialize(using = ToStringSerializer.class) Long gwNetOutputTime,
-        @JsonProperty("me_asic_input_time")
-        @JsonSerialize(using = ToStringSerializer.class) Long meAsicInputTime,
-        @JsonProperty("me_asic_output_time")
-        @JsonSerialize(using = ToStringSerializer.class) Long meAsicOutputTime,
         @JsonProperty("me_vrd_latency") Long meVrdLatency,
         @JsonProperty("me_net_latency") Long meNetLatency,
-        @JsonProperty("gw_net_latency") Long gwNetLatency,
-        @JsonProperty("me_asic_latency") Long meAsicLatency
+        @JsonProperty("gw_net_latency") Long gwNetLatency
 ) {
 }

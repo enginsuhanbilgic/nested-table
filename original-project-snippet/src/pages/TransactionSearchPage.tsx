@@ -10,7 +10,6 @@ import {
     Alert,
     Box,
     Button,
-    Chip,
     FormControl,
     IconButton,
     InputLabel,
@@ -23,7 +22,6 @@ import {
     useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { ChipProps } from "@mui/material/Chip";
 import NavigateBeforeIcon from "@mui/icons-material/NavigateBefore";
 import NavigateNextIcon from "@mui/icons-material/NavigateNext";
 import RefreshIcon from "@mui/icons-material/Refresh";
@@ -41,13 +39,14 @@ import { ApiError } from "../services/apiClient";
 import {
     createOrderSearch,
     formatInstant,
+    getOrderSearchDetail,
     getOrderSearchHistory,
 } from "../services/transactionService";
 import { getDefaultToDate } from "../services/utilService";
+import type { DateString } from "../types/latency";
 import type {
     OrderSearchHistoryResponse,
     OrderSearchItem,
-    OrderSearchStatus,
 } from "../types/transaction";
 
 const ROWS_PER_PAGE_OPTIONS = [10, 25, 50];
@@ -56,24 +55,22 @@ const ROWS_PER_PAGE_OPTIONS = [10, 25, 50];
 // padding; the offset *above* it is measured at runtime (see contentTop).
 const PAGE_BOTTOM_INSET = 16;
 
-// While a visible search is still queued/running the history is re-fetched
-// silently on this cadence, which is also how the status chips "live-update".
-const ACTIVE_POLL_MS = 2000;
+// Poll cadence for a search that is still queued/running on the backend.
+const PENDING_POLL_MS = 1500;
 
-const STATUS_CHIP: Record<
-    OrderSearchStatus,
-    { label: string; color: ChipProps["color"] }
-> = {
-    QUEUED: { label: "Queued", color: "default" },
-    RUNNING: { label: "Running", color: "info" },
-    DONE: { label: "Done", color: "success" },
-    NOT_FOUND: { label: "Not found", color: "warning" },
-    FAILED: { label: "Failed", color: "error" },
-};
-
-function isActiveStatus(status: OrderSearchStatus): boolean {
-    return status === "QUEUED" || status === "RUNNING";
-}
+// Result of the last submitted search, reported inline -- the user always
+// stays on this page. Only DONE searches enter the history grid below;
+// NOT_FOUND and FAILED are not cached server-side, so an immediate re-search
+// always runs fresh.
+type SearchOutcome =
+    | { kind: "done"; publicId: string; resultCount: number | null }
+    | {
+          kind: "not_found";
+          orderId: string;
+          txDate: DateString;
+          hintDates: DateString[];
+      }
+    | { kind: "failed" };
 
 const EMPTY_HISTORY: OrderSearchHistoryResponse = {
     content: [],
@@ -85,9 +82,23 @@ const EMPTY_HISTORY: OrderSearchHistoryResponse = {
     last: false,
 };
 
+// The backend stores order ids as 64-bit longs; anything larger would fail
+// server-side parsing, so reject it before it leaves the form.
+const ORDER_ID_MAX = 9223372036854775807n; // Java Long.MAX_VALUE
+
+function isValidOrderId(value: string): boolean {
+    if (!/^\d{1,19}$/.test(value)) {
+        return false;
+    }
+    try {
+        return BigInt(value) <= ORDER_ID_MAX;
+    } catch {
+        return false;
+    }
+}
+
 export function TransactionSearchPage() {
     const theme = useTheme();
-    const isDark = theme.palette.mode === "dark";
     const navigate = useNavigate();
 
     // Distance from the viewport top to the history grid (app bar + search
@@ -137,8 +148,13 @@ export function TransactionSearchPage() {
 
     const [orderId, setOrderId] = useState("");
     const [txDate, setTxDate] = useState(getDefaultToDate());
-    const [submitting, setSubmitting] = useState(false);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+    // posting = the POST is in flight; pendingId = the backend accepted the
+    // search and we are waiting for the worker to finish it.
+    const [posting, setPosting] = useState(false);
+    const [pendingId, setPendingId] = useState<string | null>(null);
+    const [outcome, setOutcome] = useState<SearchOutcome | null>(null);
 
     const [paginationModel, setPaginationModel] = useState({
         page: 0,
@@ -149,7 +165,8 @@ export function TransactionSearchPage() {
         useState<OrderSearchHistoryResponse>(EMPTY_HISTORY);
     const [historyLoading, setHistoryLoading] = useState(false);
 
-    const orderIdValid = /^\d+$/.test(orderId.trim());
+    const orderIdValid = isValidOrderId(orderId.trim());
+    const submitting = posting || pendingId !== null;
 
     const fetchHistory = useCallback(
         async (options?: { silent?: boolean }) => {
@@ -157,7 +174,6 @@ export function TransactionSearchPage() {
                 if (!options?.silent) {
                     setHistoryLoading(true);
                 }
-                setErrorMessage(null);
 
                 const response = await getOrderSearchHistory(
                     paginationModel,
@@ -167,8 +183,6 @@ export function TransactionSearchPage() {
                 setHistoryData(response);
             } catch (error) {
                 console.error(error);
-                // A background poll failing (e.g. a blip) should not blank
-                // the page with an error; the next user action refetches.
                 if (!options?.silent) {
                     setErrorMessage("Could not load your search history.");
                 }
@@ -185,47 +199,92 @@ export function TransactionSearchPage() {
         void fetchHistory();
     }, [fetchHistory]);
 
-    // Silent live-refresh while any visible search is queued/running. An
-    // interval keyed on the boolean (not the data object) keeps polling
-    // through transient fetch failures instead of silently stopping.
-    const hasActiveSearches = historyData.content.some((item) =>
-        isActiveStatus(item.status),
+    const applyOutcome = useCallback(
+        (search: OrderSearchItem) => {
+            if (search.status === "DONE") {
+                setOutcome({
+                    kind: "done",
+                    publicId: search.public_id,
+                    resultCount: search.result_count,
+                });
+                // The finished search is now the newest DONE row.
+                void fetchHistory({ silent: true });
+            } else if (search.status === "NOT_FOUND") {
+                setOutcome({
+                    kind: "not_found",
+                    orderId: search.order_id,
+                    txDate: search.tx_date,
+                    hintDates: search.hint_dates ?? [],
+                });
+            } else if (search.status === "FAILED") {
+                setOutcome({ kind: "failed" });
+            }
+        },
+        [fetchHistory],
     );
 
+    const startSearch = useCallback(
+        async (orderIdValue: string, date: DateString) => {
+            setOutcome(null);
+            setErrorMessage(null);
+            setPosting(true);
+
+            try {
+                const search = await createOrderSearch(orderIdValue, date);
+
+                if (
+                    search.status === "QUEUED" ||
+                    search.status === "RUNNING"
+                ) {
+                    setPendingId(search.public_id);
+                } else {
+                    // Cache hit: the reused search is already terminal.
+                    applyOutcome(search);
+                }
+            } catch (error) {
+                console.error(error);
+                setErrorMessage(
+                    error instanceof ApiError
+                        ? error.message
+                        : "Could not start the search.",
+                );
+            } finally {
+                setPosting(false);
+            }
+        },
+        [applyOutcome],
+    );
+
+    // Watch the in-flight search until it turns terminal. Interval-based so a
+    // transient poll failure just retries on the next tick.
     useEffect(() => {
-        if (!hasActiveSearches) {
+        if (!pendingId) {
             return;
         }
 
         const timer = window.setInterval(() => {
-            void fetchHistory({ silent: true });
-        }, ACTIVE_POLL_MS);
+            void getOrderSearchDetail(pendingId)
+                .then((detail) => {
+                    const status = detail.search.status;
+                    if (status === "QUEUED" || status === "RUNNING") {
+                        return;
+                    }
+                    setPendingId(null);
+                    applyOutcome(detail.search);
+                })
+                .catch((error) => {
+                    console.error(error);
+                    if (error instanceof ApiError && error.status === 404) {
+                        setPendingId(null);
+                        setErrorMessage(
+                            "The search is no longer available; please try again.",
+                        );
+                    }
+                });
+        }, PENDING_POLL_MS);
 
         return () => window.clearInterval(timer);
-    }, [hasActiveSearches, fetchHistory]);
-
-    const handleSearch = async () => {
-        if (!orderIdValid || !txDate) {
-            return;
-        }
-
-        try {
-            setSubmitting(true);
-            setErrorMessage(null);
-
-            const search = await createOrderSearch(orderId.trim(), txDate);
-
-            navigate(`/transactions/${search.public_id}`);
-        } catch (error) {
-            console.error(error);
-            setErrorMessage(
-                error instanceof ApiError
-                    ? error.message
-                    : "Could not start the search.",
-            );
-            setSubmitting(false);
-        }
-    };
+    }, [pendingId, applyOutcome]);
 
     const handlePrevPage = () => {
         setPaginationModel((prev) => ({
@@ -255,40 +314,18 @@ export function TransactionSearchPage() {
         }));
     };
 
-    // Field names double as the backend's sort keys (created_at/requested_at
-    // both map to the caller's request time server-side).
+    // Field names double as the backend's sort keys. No status column: the
+    // grid lists DONE searches only.
     const columns: GridColDef[] = [
         {
             field: "order_id",
             headerName: "Order ID",
-            flex: 1,
-            minWidth: 160,
+            width: 150,
         },
         {
             field: "tx_date",
             headerName: "Date",
             width: 110,
-        },
-        {
-            field: "status",
-            headerName: "Status",
-            width: 140,
-            renderCell: (params: GridRenderCellParams) => {
-                const row = params.row as OrderSearchItem;
-                const chip = STATUS_CHIP[row.status];
-                const label =
-                    row.status === "QUEUED" && row.queue_position
-                        ? `${chip.label} #${row.queue_position}`
-                        : chip.label;
-                return (
-                    <Chip
-                        size="small"
-                        color={chip.color}
-                        label={label}
-                        variant={isDark ? "outlined" : "filled"}
-                    />
-                );
-            },
         },
         {
             field: "result_count",
@@ -351,7 +388,9 @@ export function TransactionSearchPage() {
                         component="form"
                         onSubmit={(event) => {
                             event.preventDefault();
-                            void handleSearch();
+                            if (orderIdValid && txDate && !submitting) {
+                                void startSearch(orderId.trim(), txDate);
+                            }
                         }}
                         sx={{
                             display: "flex",
@@ -387,12 +426,12 @@ export function TransactionSearchPage() {
                             startIcon={<SearchIcon />}
                             disabled={!orderIdValid || !txDate || submitting}
                         >
-                            Search
+                            {submitting ? "Searching…" : "Search"}
                         </Button>
 
                         {orderId.trim() !== "" && !orderIdValid && (
                             <Typography variant="caption" color="warning.main">
-                                Order ID must be numeric.
+                                Order ID must be numeric (max 19 digits).
                             </Typography>
                         )}
                     </Box>
@@ -492,14 +531,90 @@ export function TransactionSearchPage() {
                     </Alert>
                 )}
 
-                {/* My searches: strictly the caller's own history. Clicking a
+                {outcome?.kind === "done" && (
+                    <Alert
+                        severity="success"
+                        sx={{ width: "100%" }}
+                        action={
+                            <Button
+                                color="inherit"
+                                size="small"
+                                onClick={() =>
+                                    navigate(`/transactions/${outcome.publicId}`)
+                                }
+                            >
+                                View results
+                            </Button>
+                        }
+                        onClose={() => setOutcome(null)}
+                    >
+                        Search completed — {outcome.resultCount ?? 0} row(s).
+                        It has been added to your searches below.
+                    </Alert>
+                )}
+
+                {outcome?.kind === "not_found" && (
+                    <Alert
+                        severity="warning"
+                        sx={{ width: "100%" }}
+                        onClose={() => setOutcome(null)}
+                    >
+                        <Stack sx={{ gap: 1 }}>
+                            <span>
+                                Order {outcome.orderId} was not found on{" "}
+                                {outcome.txDate}. Not-found results are not
+                                saved — you can search again right away.
+                            </span>
+                            {outcome.hintDates.length > 0 && (
+                                <Stack
+                                    direction="row"
+                                    sx={{
+                                        gap: 1,
+                                        flexWrap: "wrap",
+                                        alignItems: "center",
+                                    }}
+                                >
+                                    <span>It exists on:</span>
+                                    {outcome.hintDates.map((date) => (
+                                        <Button
+                                            key={date}
+                                            size="small"
+                                            variant="outlined"
+                                            disabled={submitting}
+                                            onClick={() =>
+                                                void startSearch(
+                                                    outcome.orderId,
+                                                    date,
+                                                )
+                                            }
+                                        >
+                                            Search {date}
+                                        </Button>
+                                    ))}
+                                </Stack>
+                            )}
+                        </Stack>
+                    </Alert>
+                )}
+
+                {outcome?.kind === "failed" && (
+                    <Alert
+                        severity="error"
+                        sx={{ width: "100%" }}
+                        onClose={() => setOutcome(null)}
+                    >
+                        The search failed. Failed searches are not saved — try
+                        again.
+                    </Alert>
+                )}
+
+                {/* My searches: the caller's own DONE searches. Clicking a
                     row opens the (shareable) results route. */}
                 <Paper
                     ref={contentRef}
                     sx={{
                         width: "100%",
                         minWidth: 0,
-                        minHeight: 0,
                         display: "flex",
                         flexDirection: "column",
                         borderRadius: 1,

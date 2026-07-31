@@ -1,6 +1,7 @@
 package com.bistech.reporting.repository.transaction;
 
 import com.bistech.reporting.model.transaction.OrderSearchRequest;
+import com.bistech.reporting.model.transaction.OrderSearchStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -36,12 +37,35 @@ public interface OrderSearchRequestRepository
      * The caller's history, newest interest first by default (the service
      * remaps grid sort fields onto `createdAt` / `search.*` paths). JOIN
      * FETCH keeps it one query instead of one select per history row.
+     *
+     * Two filters shape what the grid shows:
+     *  - status = DONE only (QUEUED/RUNNING are transient; NOT_FOUND/FAILED
+     *    are deliberately invisible so they can be re-searched immediately),
+     *  - only the LATEST execution per (order_id, tx_date): a TTL re-run
+     *    creates a second DONE row for the same order, and listing both
+     *    reads as a duplicate. "Latest" = highest search id (monotonic with
+     *    creation), among the executions THIS user searched.
      */
     @Query(
-            value = "SELECT r FROM OrderSearchRequest r JOIN FETCH r.search "
-                    + "WHERE r.requestedBy = :userId",
+            value = "SELECT r FROM OrderSearchRequest r JOIN FETCH r.search s "
+                    + "WHERE r.requestedBy = :userId AND s.status = :status "
+                    + "AND NOT EXISTS ("
+                    + "  SELECT 1 FROM OrderSearchRequest r2 JOIN r2.search s2 "
+                    + "  WHERE r2.requestedBy = :userId AND s2.status = :status "
+                    + "  AND s2.orderId = s.orderId AND s2.txDate = s.txDate "
+                    + "  AND s2.id > s.id)",
             countQuery = "SELECT count(r) FROM OrderSearchRequest r "
-                    + "WHERE r.requestedBy = :userId"
+                    + "JOIN r.search s "
+                    + "WHERE r.requestedBy = :userId AND s.status = :status "
+                    + "AND NOT EXISTS ("
+                    + "  SELECT 1 FROM OrderSearchRequest r2 JOIN r2.search s2 "
+                    + "  WHERE r2.requestedBy = :userId AND s2.status = :status "
+                    + "  AND s2.orderId = s.orderId AND s2.txDate = s.txDate "
+                    + "  AND s2.id > s.id)"
     )
-    Page<OrderSearchRequest> findHistory(@Param("userId") UUID userId, Pageable pageable);
+    Page<OrderSearchRequest> findHistory(
+            @Param("userId") UUID userId,
+            @Param("status") OrderSearchStatus status,
+            Pageable pageable
+    );
 }

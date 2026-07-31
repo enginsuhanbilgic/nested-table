@@ -5,9 +5,12 @@ import type { DateString, PageResponse } from "./latency";
 ///
 /// Contracts mirror the /api/transaction/* backend DTOs (snake_case keys).
 ///
-/// bigint safety: commit_id, order_id and the *_time nanosecond-epoch fields
-/// arrive as JSON STRINGS -- their values exceed Number.MAX_SAFE_INTEGER, so
-/// the backend serializes them with ToStringSerializer and all arithmetic on
+/// UNITS: me_net_* / me_vrd_* times are NANOSECONDS since epoch; gw_net_*
+/// times are MICROSECONDS since epoch; latencies are microseconds.
+///
+/// bigint safety: commit_id, order_id and the *_time epoch fields arrive as
+/// JSON STRINGS -- the ns values exceed Number.MAX_SAFE_INTEGER, so the
+/// backend serializes them with ToStringSerializer and all arithmetic on
 /// them here goes through BigInt. Latencies are microseconds and fit in a
 /// plain number.
 ///
@@ -40,7 +43,8 @@ export type OrderSearchItem = {
 };
 
 // One me_pcap row -- shared column contract of the hits grid and the
-// neighbors grid. *_time = ns since epoch (string), *_latency = µs (number).
+// neighbors grid. me/vrd *_time = ns, gw *_time = µs (both as strings),
+// *_latency = µs (number).
 export type OrderPcapItem = {
   commit_id: string;
   order_id: string | null;
@@ -66,12 +70,9 @@ export type OrderPcapItem = {
   me_net_output_time: string | null;
   gw_net_input_time: string | null;
   gw_net_output_time: string | null;
-  me_asic_input_time: string | null;
-  me_asic_output_time: string | null;
   me_vrd_latency: number | null;
   me_net_latency: number | null;
   gw_net_latency: number | null;
-  me_asic_latency: number | null;
 };
 
 export type OrderSearchDetail = {

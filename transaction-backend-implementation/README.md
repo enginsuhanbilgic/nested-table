@@ -50,10 +50,16 @@ create and in history, null on the shared-link detail read.
 
 ## Agreed behaviors encoded here
 
-- **Reuse/TTL**: historical (`tx_date < today`) `DONE`/`NOT_FOUND` searches are
-  reused forever (closed days are immutable). Today's are reused for
-  **15 minutes** (`OrderSearchService.REUSE_TTL`), then a new execution is
-  queued. `QUEUED`/`RUNNING` are always reused — the partial unique index
+- **Reuse/TTL — DONE only**: historical (`tx_date < today`) `DONE` searches
+  are reused forever (closed days are immutable); today's `DONE` for
+  **15 minutes** (`OrderSearchService.REUSE_TTL`). **`NOT_FOUND` and `FAILED`
+  are never cached and never listed in history** — the user can re-search
+  them immediately, and the history grid shows `DONE` rows only (the
+  frontend reports not-found/failed inline on the search page and stays
+  there; there is no progress screen). History additionally lists only the
+  **latest** execution per `(order_id, tx_date)` the user searched, so a TTL
+  re-run does not read as a duplicate row. `QUEUED`/`RUNNING` are always
+  reused — the partial unique index
   `uq_order_search_active` guarantees at most one in-flight execution per
   `(order_id, tx_date)`. Losing that insert race is recovered by re-reading
   the **latest non-FAILED** row (not just QUEUED/RUNNING — the winner may
@@ -70,6 +76,16 @@ create and in history, null on the shared-link detail read.
   can never be stored). If the day has been dropped from his entirely,
   neighbors answer **410 GONE**; the snapshot grids remain viewable. This
   assumes nothing about migration timing, lateness, or failure.
+- **Back-pressure**: a user may have at most **5** in-flight
+  (QUEUED/RUNNING) executions (`MAX_IN_FLIGHT_PER_USER`); the sixth answers
+  **429**. Joining an existing search via the cache is always allowed — the
+  cap guards only new queue entries, so one user cannot starve the
+  single-threaded worker. Dead searches (NOT_FOUND/FAILED) are additionally
+  purged after **6 hours** (`p_keep_hours_dead_search`) instead of 14 days.
+- **order_id validation**: the request DTO carries `order_id` as a *string*
+  (matching the bigint-safe response contract); the service parses it and
+  answers a clean 400 for non-numeric, non-positive, or Long-overflowing
+  values. The frontend pre-validates (digits, ≤19 chars, ≤ Long.MAX_VALUE).
 - **NOT_FOUND hints**: the worker probes both schemas by `order_id`
   (`findDatesContainingOrder`; one index probe per his partition) and stores
   the other dates containing the order in `hint_dates`, so the UI can offer
@@ -81,7 +97,9 @@ create and in history, null on the shared-link detail read.
     `gw_net_input_time` — implemented as a **widened `me_net_input_time`
     range** (± window + 1 s slack, since gw time always precedes me time by
     far less) **plus the exact gw filter**, so **no new me_pcap index** is
-    needed.
+    needed. **Units**: `gw_net_*` timestamps are **microseconds** while
+    `me_net_*`/`me_vrd_*` are nanoseconds — the gw window is applied in µs
+    and scaled ×1000 for the me index range.
   - Orders that never reached the ME (`me_net_input_time IS NULL`) are
     excluded from both scopes (agreed: too many null fields). If the
     *reference* order itself lacks the needed timestamp, the endpoint answers
@@ -114,6 +132,14 @@ create and in history, null on the shared-link detail read.
 
 ## Known edges (accepted, documented)
 
+- **commit_id uniqueness**: neighbor rows have been observed with repeated
+  `commit_id`s in test data, contradicting the "globally unique" assumption.
+  The neighbors path tolerates duplicates (raw query, synthetic row keys in
+  the frontend), but `stat.order_search_hit`'s PK is
+  `(search_id, commit_id)` — if a single order's *lineage* ever contains a
+  duplicate commit_id, the snapshot insert fails and the search lands on
+  FAILED. Confirm whether duplicates are a test-data artifact or real
+  before production.
 - `queue_position` counts only QUEUED rows ahead; position 1 while another
   search is RUNNING means "next up".
 - If an execution somehow ran longer than the 10-min stale threshold, the
@@ -152,15 +178,22 @@ create and in history, null on the shared-link detail read.
   snippets.
 - Errors are thrown as `ResponseStatusException` (400 bad params, 404 unknown
   search/commit, 410 raw day purged from his, 422 comparison impossible for
-  that order). If the project has a global exception handler with a different
-  envelope, adapt there.
-- **bigint precision**: `commit_id`, `order_id` and the `*_time` nanosecond
-  fields are serialized as JSON **strings** (`ToStringSerializer`) — their
+  that order, 429 in-flight cap). If the project has a global exception
+  handler with a different envelope, adapt there. NOTE: by default Spring
+  Boot omits the exception's reason string from the error body — set
+  `server.error.include-message: always` (or handle it in the global
+  handler), otherwise the frontend shows generic messages instead of e.g.
+  the 429 explanation.
+- **bigint precision**: `commit_id`, `order_id` and the `*_time` epoch
+  fields are serialized as JSON **strings** (`ToStringSerializer`) — the ns
   values exceed JavaScript's `Number.MAX_SAFE_INTEGER`, so numeric JSON
-  would silently corrupt them in the browser. The frontend types them as
+  would silently corrupt them in the browser (gw µs values would fit, but
+  stay strings for one consistent contract). The frontend types them as
   `string` and uses BigInt for arithmetic. Latencies (µs) stay numeric.
   Jackson coerces the incoming `{"order_id": "123..."}` string back to
   `Long` on the request side by default.
+- **me_asic_\*** columns are excluded end to end (DDL, entity, DTOs,
+  frontend) — not used by this feature.
 - **Timezone assumption**: `LocalDate.now()` is "today" for the schema
   *guess* and the TTL rule — the server runs in exchange-local time, the
   same assumption the stats pipeline makes. (Routing itself no longer
