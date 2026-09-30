@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 @RestController
 @RequestMapping("/api/transaction")
-@PreAuthorize("hasRole('ILETISIM_KANALLARI')")
+@PreAuthorize("hasRole('TRANSACTION')")
 @RequiredArgsConstructor
 public class TransactionSearchController {
 

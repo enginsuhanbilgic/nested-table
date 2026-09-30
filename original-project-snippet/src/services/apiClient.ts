@@ -18,6 +18,20 @@ export function setAccessToken(token: string | null) {
   accessToken = token;
 }
 
+// AuthContext registers its single-flight refresh here. Resolves to the new
+// access token, or null when the session is gone (→ login page). Indirection
+// avoids a circular import between apiClient and authService.
+let refreshHandler: (() => Promise<string | null>) | null = null;
+
+export function setRefreshHandler(handler: (() => Promise<string | null>) | null) {
+  refreshHandler = handler;
+}
+
+// The auth endpoints must never trigger a refresh-and-retry loop themselves.
+const AUTH_PATHS = ["/auth/login", "/auth/refresh", "/auth/logout"];
+
+type RetriableConfig = InternalAxiosRequestConfig & { _retried?: boolean };
+
 export class ApiError extends Error {
   status?: number;
   requestId?: string;
@@ -68,31 +82,50 @@ apiClient.interceptors.request.use(
   },
 );
 
+function toApiError(error: AxiosError) {
+  const status = error.response?.status;
+  const requestId = error.response?.headers?.["x-request-id"] as
+    | string
+    | undefined;
+
+  const apiMessage =
+    typeof error.response?.data === "object" &&
+    error.response.data &&
+    "message" in error.response.data
+      ? String((error.response.data as { message?: unknown }).message)
+      : error.message;
+
+  return new ApiError(apiMessage || "Request failed", {
+    status,
+    requestId,
+    details: error.response?.data,
+  });
+}
+
 apiClient.interceptors.response.use(
   (response) => response,
-  (error: AxiosError) => {
+  async (error: AxiosError) => {
     const status = error.response?.status;
-    const requestId = error.response?.headers?.["x-request-id"] as
-      | string
-      | undefined;
+    const config = error.config as RetriableConfig | undefined;
+    const isAuthPath = AUTH_PATHS.some((path) => config?.url?.includes(path));
+
+    // Access tokens die every ~15 min by design. On the first 401 of a
+    // request, refresh once (single-flight, shared across all concurrent
+    // 401s) and replay the request with the new token.
+    if (status === 401 && config && !config._retried && !isAuthPath && refreshHandler) {
+      const newToken = await refreshHandler();
+
+      if (newToken) {
+        config._retried = true;
+        config.headers.Authorization = `Bearer ${newToken}`;
+        return apiClient(config);
+      }
+    }
 
     if (status === 401) {
       window.dispatchEvent(new CustomEvent(AUTH_UNAUTHORIZED_EVENT));
     }
 
-    const apiMessage =
-      typeof error.response?.data === "object" &&
-      error.response.data &&
-      "message" in error.response.data
-        ? String((error.response.data as { message?: unknown }).message)
-        : error.message;
-
-    return Promise.reject(
-      new ApiError(apiMessage || "Request failed", {
-        status,
-        requestId,
-        details: error.response?.data,
-      }),
-    );
+    return Promise.reject(toApiError(error));
   },
 );

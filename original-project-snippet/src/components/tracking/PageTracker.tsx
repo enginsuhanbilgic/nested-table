@@ -26,7 +26,7 @@ export const PageTracker: React.FC = () => {
       return;
     }
 
-    if (!isAuthenticated || user?.employeeId === "MOCK-001") {
+    if (!isAuthenticated) {
       // Not tracked, but still part of the navigation trail — this is how
       // /login becomes the referral of the first tracked page.
       previousPathRef.current = currentPath;
@@ -37,6 +37,9 @@ export const PageTracker: React.FC = () => {
       return;
     }
 
+    console.log("previousPathRef: " + previousPathRef.current);
+    console.log("document referrer: " + document.referrer);
+
     const requestBody: UserPageHistoryLoggingRequest = {
       pagePath: currentPath,
       // Route metadata gives a stable, human-readable title regardless of
@@ -45,7 +48,7 @@ export const PageTracker: React.FC = () => {
       // First tracked page of this document: no in-app history yet, so fall
       // back to the browser referrer (external origin, or empty on a direct
       // visit / reload).
-      referral: previousPathRef.current ?? document.referrer,
+      referrer: previousPathRef.current ?? document.referrer,
     };
 
     logPageHistory(requestBody).catch((error) => {

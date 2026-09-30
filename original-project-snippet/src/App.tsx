@@ -4,23 +4,21 @@ import { AuthProvider } from './contexts/AuthContext'
 import { AppShell } from './components/layout/AppShell'
 import { RequireAuth } from './routes/RequireAuth'
 import { RequireRole } from './routes/RequireRole'
+import { RequirePage } from './routes/RequirePage'
 import { PublicRoute } from './routes/PublicRoute'
 import { LoginPage } from './pages/LoginPage'
 import { UnauthorizedPage } from './pages/UnauthorizedPage'
 import { AdminPage } from './pages/AdminPage'
-import { LatencyDailyStatsPage } from './LatencyDailyStatsPage'
-import { RttStatsPage } from './RttStatsPage'
-import { NestedLatencyPage } from './NestedLatencyPage'
+import { LatencyDailyStatsPage } from './pages/LatencyDailyStatsPage'
+import { RttStatsPage } from './pages/RttStatsPage'
+import { NestedLatencyPage } from './pages/NestedLatencyPage'
 import { PageTrackingPage } from './pages/PageTrackingPage'
 import { TransactionSearchPage } from './pages/TransactionSearchPage'
 import { TransactionDetailPage } from './pages/TransactionDetailPage'
-import { PageTracker } from './components/analytics/PageTracker'
+import { PageTracker } from './components/tracking/PageTracker'
 import { RouteTitleSync } from './routes/RouteTitleSync'
-import {
-  ADMIN_PAGE_ROLES,
-  ANALYTICS_PAGE_ROLES,
-  TRANSACTION_PAGE_ROLES,
-} from './routes/routeMeta'
+import { ADMIN_ROLE } from './types/auth'
+import { PAGE_CODES } from './routes/routeMeta'
 
 export default function App() {
   return (
@@ -38,23 +36,44 @@ export default function App() {
             <Route element={<RequireAuth />}>
               <Route element={<AppShell />}>
                 <Route index element={<Navigate to="/latency/daily" replace />} />
-                <Route path="/latency/daily" element={<LatencyDailyStatsPage />} />
-                <Route path="/latency/rtt" element={<RttStatsPage />} />
-                <Route path="/latency/grouped" element={<NestedLatencyPage />} />
+                <Route
+                  path="/latency/daily"
+                  element={
+                    <RequirePage pageCode={PAGE_CODES.LATENCY_DAILY}>
+                      <LatencyDailyStatsPage />
+                    </RequirePage>
+                  }
+                />
+                <Route
+                  path="/latency/rtt"
+                  element={
+                    <RequirePage pageCode={PAGE_CODES.LATENCY_RTT}>
+                      <RttStatsPage />
+                    </RequirePage>
+                  }
+                />
+                <Route
+                  path="/latency/grouped"
+                  element={
+                    <RequirePage pageCode={PAGE_CODES.LATENCY_GROUPED}>
+                      <NestedLatencyPage />
+                    </RequirePage>
+                  }
+                />
                 <Route
                   path="/transactions"
                   element={
-                    <RequireRole roles={TRANSACTION_PAGE_ROLES}>
+                    <RequirePage pageCode={PAGE_CODES.TRANSACTIONS}>
                       <TransactionSearchPage />
-                    </RequireRole>
+                    </RequirePage>
                   }
                 />
                 <Route
                   path="/transactions/:publicId"
                   element={
-                    <RequireRole roles={TRANSACTION_PAGE_ROLES}>
+                    <RequirePage pageCode={PAGE_CODES.TRANSACTIONS}>
                       <TransactionDetailPage />
-                    </RequireRole>
+                    </RequirePage>
                   }
                 />
                 {/*
@@ -67,15 +86,15 @@ export default function App() {
                 <Route
                   path="/analytics/page"
                   element={
-                    <RequireRole roles={ANALYTICS_PAGE_ROLES}>
+                    <RequirePage pageCode={PAGE_CODES.ANALYTICS}>
                       <PageTrackingPage />
-                    </RequireRole>
+                    </RequirePage>
                   }
                 />
                 <Route
                   path="/admin"
                   element={
-                    <RequireRole roles={ADMIN_PAGE_ROLES}>
+                    <RequireRole roles={[ADMIN_ROLE]}>
                       <AdminPage />
                     </RequireRole>
                   }

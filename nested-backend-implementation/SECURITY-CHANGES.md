@@ -406,10 +406,18 @@ That is true, and the resolution is not to weaken either property:
 - **Therefore the client refreshes on failure.** Every login attempt gets a
   fresh challenge.
 
-The key observation: **this was already required before the reordering.** Under
-the old order, correct credentials plus a wrong CAPTCHA answer consumed the
-challenge and rejected the login just the same. The reordering only widens the
-window. It is one line in the login error handler.
+**Correction (2026-08-20):** this section originally claimed the refresh was
+"already required before the reordering", on the belief that a wrong CAPTCHA
+answer also consumed the challenge. That belief was wrong: **the CAPTCHA
+service consumes a challenge only on successful verification** — a wrong
+answer leaves it alive and retryable. Under the old order there was therefore
+no stranding scenario at all (wrong credentials never reached the CAPTCHA
+step; a wrong answer left it retryable). The refresh-on-failure obligation is
+created by this reordering: with CAPTCHA first, a correct answer is consumed
+even when the credentials are then rejected — exactly the moment the user
+retries. A wrong answer still leaves the challenge alive, so refreshing then
+is unnecessary but harmless; §6.1 explains why the client refreshes on every
+failure anyway. It is one line in the login error handler.
 
 `app.captcha.bypass-when-unavailable` (default `true`) preserves the previous
 availability-over-strictness behaviour and makes it a config decision rather
@@ -498,8 +506,16 @@ no JUnit, no build tool, exits non-zero on failure.
 > On any non-2xx response from `/api/auth/login`, fetch a fresh CAPTCHA and
 > clear the answer field.
 
-One line in the login error handler. See §5.1 for why this is not optional and
-was already required.
+One line in the login error handler. See §5.1 for why this is not optional.
+
+Strictly, only a *successful* verification consumes the challenge, so a
+failure caused by a wrong answer leaves it alive — a client able to recognise
+that specific error could keep the same image. The blanket refresh is still
+the contract because the login error body does not currently distinguish
+"wrong answer" from "challenge already consumed", and guessing wrong strands
+the user against a dead challenge ("no such captcha"). If that distinction is
+ever wanted, first add a machine-readable error code to the login failure
+response; do not match on message text.
 
 ### 6.2 The frontend should call `/api/auth/me`, not read its own token
 

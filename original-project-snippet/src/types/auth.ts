@@ -1,16 +1,36 @@
-export type Role =
-  'ROLE_STANDARD_USER' |
-  'ROLE_ILETISIM_KANALLARI' |
-  'ROLE_ADMIN'
+// Roles are dynamic now — admins create them at runtime — so RoleCode is an
+// open string. Only ADMIN is referenced by name in the frontend.
+export type RoleCode = string
+export type PageCode = string
 
-export interface User {
-  employeeId: string
+export const ADMIN_ROLE = 'ADMIN'
+
+/**
+ * The identity the UI gates on: returned by /login and /refresh, always
+ * consistent with the access token issued next to it. `pages` is what the
+ * sidebar/routes check; ADMIN users already have every page in the list
+ * (the backend computes that), so the UI needs no ADMIN special-casing
+ * except for the admin page itself.
+ */
+export interface SessionUser {
   username: string
   fullName: string
-  organization: string
-  email: string
-  memberOf: string[]
-  roles: Role[]
+  email: string | null
+  organization: string | null
+  employeeId: string
+  roles: RoleCode[]
+  pages: PageCode[]
+}
+
+export interface TokenPairResponse {
+  accessToken: string
+  refreshToken: string
+  user: SessionUser
+}
+
+/** GET /api/auth/me — live truth from the DB (the token is a snapshot). */
+export interface MeResponse extends SessionUser {
+  lastLoggedIn: string | null
 }
 
 export interface LoginCredentials {
@@ -20,28 +40,15 @@ export interface LoginCredentials {
   answer?: string
 }
 
-/**
- * Backend login payload as described:
- * /login returns jwt + user identity fields.
- * employeeId is also read from employeeId defensively because the backend contract was described once as employeeId.
- */
-export interface LoginResponseDto {
-  jwt: string
-}
-
-export interface AuthSession {
-  jwt: string
-  user: User
-}
-
 export interface AuthContextValue {
-  user: User | null
+  user: SessionUser | null
   isAuthenticated: boolean
   isLoading: boolean
   login: (credentials: LoginCredentials) => Promise<void>
   logout: () => void
-  hasAnyRole: (roles: Role[]) => boolean
-  hasAllRoles: (roles: Role[]) => boolean
+  hasRole: (role: RoleCode) => boolean
+  hasAnyRole: (roles: RoleCode[]) => boolean
+  canSeePage: (page: PageCode) => boolean
 }
 
 export interface CaptchaCreateRequest {

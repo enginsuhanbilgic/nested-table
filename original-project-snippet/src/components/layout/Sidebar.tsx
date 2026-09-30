@@ -18,6 +18,7 @@ import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded'
 import { motion } from 'framer-motion'
 import { matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
+import { ADMIN_ROLE } from '../../types/auth'
 import { ROUTE_META, type RouteMeta } from '../../routes/routeMeta'
 
 export const SIDEBAR_WIDTH_EXPANDED = 280
@@ -35,11 +36,14 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
   const theme = useTheme()
   const location = useLocation()
   const navigate = useNavigate()
-  const { hasAnyRole } = useAuth()
+  const { hasRole, canSeePage } = useAuth()
 
   // Only show items the user is allowed to open, instead of letting the
-  // route guard bounce them to /unauthorized after the click.
-  const canSee = (item: RouteMeta) => !item.roles || hasAnyRole(item.roles)
+  // route guard bounce them to /unauthorized after the click. Page access
+  // comes from the runtime role→page mapping; the admin entry alone is
+  // gated by the ADMIN role in code.
+  const canSee = (item: RouteMeta) =>
+    item.adminOnly ? hasRole(ADMIN_ROLE) : !item.pageCode || canSeePage(item.pageCode)
   const primaryNavItems = ROUTE_META.filter(
     item => item.section === 'primary' && canSee(item),
   )
