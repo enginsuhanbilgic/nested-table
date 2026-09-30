@@ -28,8 +28,7 @@ function App() {
           Nested Latency Explorer
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Two hierarchies, each with its own latency chart. Toggle the eye to compare rows;
-          double-click to focus one lineage.
+          Reusable nested grids paired with latency comparison charts.
         </Typography>
       </Box>
 
@@ -63,11 +62,13 @@ function App() {
           title={participantScenario.chartTitle}
           entities={participant.entities}
           loading={participant.loading}
+          onClear={participant.clear}
         />
         <ChartCard
           title={nodeScenario.chartTitle}
           entities={node.entities}
           loading={node.loading}
+          onClear={node.clear}
         />
       </Box>
     </Box>

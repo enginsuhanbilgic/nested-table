@@ -1,0 +1,58 @@
+Transaction sayfası emir bazlı gecikme değerlerini, gateway instanceları ve matching engine partitionları üzerinde o emirle yakın zamanda işlenmeye başlamış diğer emirlerle karşılaştırmalı bir biçimde gösterecek.
+
+Örneğin bir emir, NPFIXR01 makinesinin FP_GPCA instance’ı altındaki bir user ile gönderilmişse, o emrin gecikme değerleri aynı FG_GPCA instanceına gelen yakın zamanlı emirlerle karşılaştırılmalıdır. Gateway makineleri birbirinden bağımsızlar. Aynı makinenin farklı gateway instance’ları ise direkt farklı process’ler oldukları için birbirlerinden bağımsızlardır. Her gateway instance’sa partition bazlı multithreaded çalışıyor. Yani aynı instance’tan 1 ve 2. Partitiona giden emirler birbirlerini direkt olarak bloklamıyor. Bu yüzden karşılaştırılacak diğer emirler, seçilen emirle aynı gateway makinesinde, aynı instanceda olmalı ve aynı partitiona gitmeli. Burada order ID ile emri bulduktan sonra diğer emirlerin aralığını gw_net_input_time ile belirleyebiliriz.
+
+Matching engine bazında toplam 6 partition var. Her partition birbirinden bağımsız processler. Burada da emri order ID ile bulduktan sonra me_net_input_time ile belirlenen aralıkta emirler incelenebilir.
+
+Bu fonksiyon için me_pcap tablosunda anlık olarak 31 column bulunmaktadır. Bunlardan bu fonksiyon için kullanılabilecek olanlar şunlardır:
+
+commit_id (bigint): Her emir için unique’dir ve tablo tanımında NOT NULL olarak belirtilmiştir. Transaction sayfasında gösterilebilir ancak filtreleme yapılmasına gerek yoktur. (~~Farklı günlerdeki farklı emirlerin commit_id’leri aynı olabiliyor mu bilmiyorum, sorulacak.~~ Sanırım unique, commit_id hesaplanırken tarih, partition vs bilgilerle combine edilerek oluşturuluyor.)
+
+order_id (bigint): Çoğu emir için commit_id ile aynıdır ama cancel order vs. gibi emirlerde bağlı olduğu orijinal emirin commit_id’sine denk gelmektedir. Örneğin al emri commit_id’si 123 order_id’si 123 olsun. Bu emrin iptal emrinin commit_id’si 124 order_id’si 123 olur. Kullanıcılar sayfada filtreleme yaparken order_id kullanılacak. Böylece o order_id’ye sahip tüm emirler kullanıcıya gözükecek.
+
+tx_date (date): public şeması altında sadece günlük veri bulunmaktadır. Bu yüzden orada tx_date’e ihtiyaç olmayabilir ama his şeması altındaki me_pcap’te bir haftalık veri var bu yüzden burada ihtiyaç olabilir.
+
+node (varchar), process (varchar), partition (smallint): Gateway bazlı olarak birbirini etkileyecek emirleri görmek için bu değerlerin ortak olması gerekiyor. Örneğin gecikme değerlerini ölçeceğimiz emir değerleri node:NPFIXR01, process:FG_GPCA, partition:2 ise gateway bazlı filtrelemede bunlar aynı olmalı.
+
+partition (smallint): Matching engine bazlı olarak birbirini etkileyecek emirleri görmek için partition değerinin aynı olması gerekiyor. Örneğin partition 1 ve 2’deki emirler birbirlerinin gecikme değerlerini etkilemiyor çünkü bunları ayrı process’ler.
+
+gw_net_input_time (bigint): Nanosecond olarak tutuluyor. Gateway bazlı gecikme değerini incelerken zaman olarak birbirine yakın emirleri görmek için gw_net_input_time ile belli bir aralık kontrol edilmeli. Örneğin aranılan emir +100ms / -100ms aralığındaki emirler gösterilecekse, gw_net_input_time +- 100 milyon aralığındaki emirler filtrelenmeli.
+
+me_net_input_time (bigint): Nanosecond olarak tutuluyor. Matching engine bazlı gecikme değeri incelerken kullanılmalı. gw_net_input_time ile aynı mantıkta. Bu iki zaman değerini aralık olarak filtrelemek için gerekli index’ler, optimizasyon metodları vs. incelenecek.
+
+me_vrd_latency (bigint), me_net_latency (bigint), gw_net_latency (bigint): Bunlar zaman değerlerinin aksine microsecond olarak tutuluyor. Bu gecikme değerleri tüm filtrelemeler yapıldığında karşımıza çıkan emirlerin asıl işimize yarayan kısmı.
+
+connector_port (integer): Şimdilik sadece emirlerin değerlerini gösterirken kullanılacak. Filtrelemede kullanılmayacak ama port gecikme değerlerini etkileyen bir şey mi bilmiyorum, bu da incelenecek.
+
+Şu anda public.me_pcap tablosu üzerinde üç adet index bulunmakta. Bunlar şu columnlar üzerinde: (commit_id), (order_id), ve (client_id, user_name)
+
+his.me_pcap tablosu ise günlere göre partition’lanmış şekilde. Örneğin bir partition:
+
+ALTER TABLE ONLY his.me_pcap ATTACH PARTITION his.me_pcap_p20260701 FOR VALUES
+FROM ('2026-07-01') TO ('2026-07-02');
+
+his.me_pcap üzerindeki tüm partition’lanmış tablolar üzerindeki index’lerse şu şekilde:
+
+• (client_id,client_id_hex, user_name) INCLUDE (client_id, user_name, client_id_hex)
+• (commit_id)
+• (order_id)
+• (tx_date)
+
+Örneğin şu anda 22 farklı gün için partitionlanmış tablo var, her biri için dörder index gözüküyor yani toplam 88 index var. Bu tabloların üzerine gerekli görülmesi halinde yeni index’ler oluşturulmalı.
+
+Daha öncesinde nested latency için test db'sindeki me_pcap'e latency_stats_pipeline.sql ile eklediğimiz index'ler şu şekildeydi:
+
+CREATE INDEX IF NOT EXISTS idx_me_pcap_part_commit
+    ON public.me_pcap (partition, commit_id)
+    INCLUDE (me_net_input_time, tx_date);
+
+-- Minute-bucket recompute: each touched minute is a contiguous range of
+-- me_net_input_time. Non-partial on purpose (filters may change).
+CREATE INDEX IF NOT EXISTS idx_me_pcap_txdate_netin
+    ON public.me_pcap (tx_date, me_net_input_time);
+
+CREATE INDEX IF NOT EXISTS idx_his_me_pcap_txdate_netin
+    ON his.me_pcap (tx_date, me_net_input_time);
+
+
+Baştan sona sayfanın fonksiyonalitesi şu şekilde olacak: Kullanıcı order_id ve tercihen tx_date ile emir aratacak (tx_date default olarak o günün tarihi girilmiş olarak gelecek). Sonrasında tarihe göre public veya his şemasındaki me_pcap üzerinden order_id aratılacak. Burada database’de me_pcap üzerinde yapılan arama maliyetli olacağından dolayı backend’i bloklamamak adına spring boot async yapısı kullanılacak ve ön yüzde kullanıcı bağlantısını kaybettiği veya başka sayfalara gittiği durumlarda aramayı kaybetmemesi adına bir queue mantığı ile emir arama sıraya eklenecek. Kullanıcı aradığı emrin işlenmesini loading barı ile takip edebilecek. Bu aramanın queue bilgileri (order_id, loading, is_successful vs.), aramadan elde edilen bilgiler, o emre yakın olan bilgiler vs. database’de ayrı tablo yapılarında tutulacak. Sonrasında başka bir kullanıcı aynı order_id ile arama yaptığında direkt olarak database’deki o değerler döndürülebilir. Bu aramadaki order_id ile eşleşen emirler tabloda gösterilecek ve her emir için Matching Engine ve Gateway bazlı iki adet buton olacak. Bunlar me_net_input_time ve gw_net_input_time ile seçilen emre yakın emirleri; o emirlerin latency değerlerini, user, participant, node vs. bilgileri gösterecek. Ön yüz tasarımı olarak arama yapılacak sayfada order_id ve tx_date text input componentleri ve arama butonu olacak. Altında ise kullanıcının daha önce yaptığı aramaların tablosu olacak, bunların order_id’si, tx_date’i status’u vs gözükecek. Bu satırlara tıklayınca belki farklı sayfada belki sayfa değişmeden daha akıcı bir geçişle o order_id’ye ait sonuçların döndürüldüğü ekran gelecek. Burada en yukarıda satır satır yine bir tablo şeklinde order_id’nin döndürdüğü emirler gözükecek. Bu emirlerin satırlarında yukarıda bahsedildiği üzere ME ve GW için ayrı iki buton olacak ve bunlar sayfanın altındaki bir tabloyu (ve belki chart da eklenebilir) populate edecek. Tablonun ortasında belli edici bir renkle orijinal seçilen emir gözükecek. Üst ve altında da o aralıktaki emirler gözükecek.

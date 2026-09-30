@@ -1,0 +1,34 @@
+1_ They might appear but they will have too many null fields so we should actually ignore them completely here. We shouldn't have them neither in me part nor gw part.
+2_ It is confirmed that no to commit_id is the same accross days.
+3_ You can look at @original-project-snippet/src/types/auth.ts  @original-project-snippet/src/routes/RequireAuth.tsx @original-project-snippet/src/routes/RequireRole.tsx  for user management in frontend. In the backend, users are authenticated using an external LDAP service. Then, user information are persisted to the db lr_users table. Roles are persisted to lr_user_roles table. As for the role name, it can be ILETISIM_KANALLARI for now. As for getting user info, I use @AuthenticationPrinciple(expression = "username") to get the username of the user or UUID userId for user id. If you need more specific information, ask me.
+4_ We should still exclude PRV orders but we should include the MO96/MO75/ET96 orders.
+5_ I think if it is not too much of a burden on his.me_pcap (let's say around 700 million rows of data but there is order_id index), we should hint the user that this order is in this date. Make a search in that date instead. 
+6_ No, we should store them in stat schema. These should also be purged after default 14 days. We can use the same procedure for purging.
+7_ 15 minutes is okay. 
+8_ There should be a sharable link. However, there is an update on the per-user and global order search. There shouldn't be a global order search screen. There should only be a per-user order search. The only role based work is only users with ILETISIM_KANALLARI role should see the page. So, I'm not sure how to implement shareable link. I think opening the shared link should not add that cached order search results to that user's search list. It should only show the results. Opening a link with not searched order should show an error, it should not make a search.
+
+Also, there is another update to this. Sometimes, the service that captures data for me_pcap misses some packages, this results in incomplete or non-existent orders. So, some orders are not in me_pcap. However, we also have a gw_lat table which is under his schema (not in public) and is populated after a day has ended. This table has different columns but this does not miss orders. I think, we may also utilize this table but I'm not sure how. Here is the table:
+
+CREATE TABLE IF NOT EXISTS his.gw_lat(
+enter_timestamp bigint,
+inbound_message_type character varying(5),
+orderid bigint (this is the order_id in me_pcap),
+transcationid bigint (this is the commit_id in me_pcap),
+clordid character varying(255),
+latency_rtt integer,
+me_latency integer,
+inbound_latency integer,
+outbound_latency integer,
+user_name character varying(255),
+appid character varying(20),
+process character varying(30),
+node character varying(30),
+gw_type character varying(10),
+orderid_hex character varying(100),
+insert_date date,
+connport integer,
+outbound_message_type character varying(5),
+outputtime bigint,
+file_date date,
+partition integer
+)

@@ -1,41 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { GridSortModel } from '@mui/x-data-grid';
-import type { EntityNode } from '../../api/mockApi';
+import type { EntityNode, PageRequest, PageSort, PagedResult } from '../../types';
 import type { FlatRow } from './types';
 import { TREE_FIELD } from './types';
 
-/** Resolve the sortable value for a node + column field across heterogeneous levels. */
-function sortValue(node: EntityNode, field: string): string | number | undefined {
-  if (field === TREE_FIELD) return node.name;
-  if (field === 'avg' || field === 'med' || field === 'max') return node.daily[field];
-  return node.extra[field];
-}
-
-/**
- * Sort a single set of siblings by the active sort model. Sorting per sibling
- * group (rather than the whole flattened list) keeps the parent→child tree
- * intact while still ordering rows. Levels that lack the field sort to the end.
- */
-function sortSiblings(nodes: EntityNode[], sortModel: GridSortModel): EntityNode[] {
-  const sort = sortModel[0];
-  if (!sort || !sort.sort) return nodes;
-  const dir = sort.sort === 'desc' ? -1 : 1;
-  return [...nodes].sort((a, b) => {
-    const av = sortValue(a, sort.field);
-    const bv = sortValue(b, sort.field);
-    if (av == null && bv == null) return 0;
-    if (av == null) return 1;
-    if (bv == null) return -1;
-    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
-    return String(av).localeCompare(String(bv)) * dir;
-  });
-}
+const DEFAULT_PAGE_SIZE = 10;
 
 interface Args {
-  fetchRoot: () => Promise<EntityNode[]>;
-  fetchChildren: (parentId: string) => Promise<EntityNode[]>;
+  fetchRoot: (request: PageRequest) => Promise<PagedResult<EntityNode>>;
+  fetchChildren: (parentId: string, request: PageRequest) => Promise<PagedResult<EntityNode>>;
   /** Ids currently displayed on the chart (drives the eye icon + row highlight). */
   shownIds: Set<string>;
+}
+
+interface PageState {
+  rows: EntityNode[];
+  total: number;
+  nextPage: number | null;
+  loading: boolean;
+}
+
+const emptyPageState = (loading = false): PageState => ({
+  rows: [],
+  total: 0,
+  nextPage: 0,
+  loading,
+});
+
+const sortFromModel = (sortModel: GridSortModel): PageSort | undefined => {
+  const sort = sortModel[0];
+  return sort?.sort ? { field: sort.field, direction: sort.sort } : undefined;
+};
+
+const requestKey = (scope: string, page: number, sort?: PageSort) =>
+  `${scope}:${page}:${sort?.field ?? ''}:${sort?.direction ?? ''}`;
+
+function mergeById(existing: EntityNode[], incoming: EntityNode[], page: number): EntityNode[] {
+  if (page === 0) return incoming;
+  const seen = new Set(existing.map((node) => node.id));
+  return [...existing, ...incoming.filter((node) => !seen.has(node.id))];
 }
 
 function toFlatRow(
@@ -48,6 +51,7 @@ function toFlatRow(
   return {
     id: node.id,
     [TREE_FIELD]: node.name,
+    _kind: 'node',
     _depth: node.level,
     _hasChildren: node.hasChildren,
     _expanded: expanded,
@@ -62,86 +66,172 @@ function toFlatRow(
   };
 }
 
+function toLoaderRow(
+  parentId: string | null,
+  depth: number,
+  nextPage: number,
+  loading: boolean,
+): FlatRow {
+  return {
+    id: `__load__:${parentId ?? 'root'}:${nextPage}`,
+    [TREE_FIELD]: 'Loading more rows...',
+    _kind: 'loader',
+    _depth: depth,
+    _hasChildren: false,
+    _expanded: false,
+    _loading: loading,
+    _shown: false,
+    _ancestors: [],
+    _parentId: parentId,
+    _nextPage: nextPage,
+  };
+}
+
 /**
- * Owns the nested-tree state for the grid: top-level rows, a lazily-loaded
- * children cache, and the expand/collapse set. Returns a flattened row array
- * (only descendants of expanded rows are included) plus a `toggle` handler.
+ * Owns nested-tree state for the grid. Data is loaded a page at a time for both
+ * roots and child sibling groups, then flattened for the virtualized DataGrid.
  */
 export function useNestedRows({ fetchRoot, fetchChildren, shownIds }: Args) {
-  const [roots, setRoots] = useState<EntityNode[]>([]);
-  const [childrenMap, setChildrenMap] = useState<Record<string, EntityNode[]>>({});
+  const [rootState, setRootState] = useState<PageState>(() => emptyPageState(true));
+  const [childrenState, setChildrenState] = useState<Record<string, PageState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
-  const [loading, setLoading] = useState<Set<string>>(() => new Set());
-  const [rootLoading, setRootLoading] = useState(true);
   const [sortModel, setSortModel] = useState<GridSortModel>([]);
 
-  // Mirror of `expanded` so the click handler can read the latest value.
-  const expandedRef = useRef(expanded);
-  expandedRef.current = expanded;
-  // Guards against duplicate child fetches for the same parent.
   const requested = useRef<Set<string>>(new Set());
+  const sort = useMemo(() => sortFromModel(sortModel), [sortModel]);
 
   useEffect(() => {
     let alive = true;
-    setRootLoading(true);
-    fetchRoot().then((r) => {
+    const key = requestKey('root', 0, sort);
+    requested.current.add(key);
+    fetchRoot({ page: 0, pageSize: DEFAULT_PAGE_SIZE, sort }).then((result) => {
       if (!alive) return;
-      setRoots(r);
-      setRootLoading(false);
+      setRootState({
+        rows: result.rows,
+        total: result.total,
+        nextPage: result.nextPage,
+        loading: false,
+      });
     });
     return () => {
       alive = false;
     };
-  }, [fetchRoot]);
+  }, [fetchRoot, sort]);
 
-  const ensureChildren = useCallback(
-    (id: string) => {
-      if (requested.current.has(id)) return;
-      requested.current.add(id);
-      setLoading((prev) => new Set(prev).add(id));
-      fetchChildren(id).then((kids) => {
-        setChildrenMap((m) => ({ ...m, [id]: kids }));
-        setLoading((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
+  const loadRootPage = useCallback(
+    (page: number) => {
+      if (rootState.loading || page == null) return;
+      const key = requestKey('root', page, sort);
+      if (requested.current.has(key)) return;
+      requested.current.add(key);
+      setRootState((prev) => ({ ...prev, loading: true }));
+      fetchRoot({ page, pageSize: DEFAULT_PAGE_SIZE, sort }).then((result) => {
+        setRootState((prev) => ({
+          rows: mergeById(prev.rows, result.rows, page),
+          total: result.total,
+          nextPage: result.nextPage,
+          loading: false,
+        }));
+      });
+    },
+    [fetchRoot, rootState.loading, sort],
+  );
+
+  const loadChildrenPage = useCallback(
+    (parentId: string, page: number) => {
+      const state = childrenState[parentId] ?? emptyPageState();
+      if (state.loading || page == null) return;
+      const key = requestKey(`children:${parentId}`, page, sort);
+      if (requested.current.has(key)) return;
+      requested.current.add(key);
+      setChildrenState((prev) => ({
+        ...prev,
+        [parentId]: { ...(prev[parentId] ?? emptyPageState()), loading: true },
+      }));
+      fetchChildren(parentId, { page, pageSize: DEFAULT_PAGE_SIZE, sort }).then((result) => {
+        setChildrenState((prev) => {
+          const current = prev[parentId] ?? emptyPageState();
+          return {
+            ...prev,
+            [parentId]: {
+              rows: mergeById(current.rows, result.rows, page),
+              total: result.total,
+              nextPage: result.nextPage,
+              loading: false,
+            },
+          };
         });
       });
     },
-    [fetchChildren],
+    [childrenState, fetchChildren, sort],
   );
 
   const toggle = useCallback(
     (id: string) => {
-      const willExpand = !expandedRef.current.has(id);
+      const willExpand = !expanded.has(id);
       setExpanded((prev) => {
         const next = new Set(prev);
         if (willExpand) next.add(id);
         else next.delete(id);
         return next;
       });
-      if (willExpand) ensureChildren(id);
+      if (willExpand && !childrenState[id]) loadChildrenPage(id, 0);
     },
-    [ensureChildren],
+    [childrenState, expanded, loadChildrenPage],
   );
+
+  const loadMoreForRow = useCallback(
+    (row: FlatRow) => {
+      if (row._kind !== 'loader' || row._nextPage == null) return;
+      if (row._parentId) loadChildrenPage(row._parentId, row._nextPage);
+      else loadRootPage(row._nextPage);
+    },
+    [loadChildrenPage, loadRootPage],
+  );
+
+  const handleSortModelChange = useCallback((model: GridSortModel) => {
+    requested.current.clear();
+    setExpanded(new Set());
+    setChildrenState({});
+    setRootState(emptyPageState(true));
+    setSortModel(model);
+  }, []);
 
   const rows = useMemo<FlatRow[]>(() => {
     const out: FlatRow[] = [];
     const walk = (nodes: EntityNode[], ancestors: EntityNode[]) => {
-      for (const node of sortSiblings(nodes, sortModel)) {
+      for (const node of nodes) {
         const isExpanded = expanded.has(node.id);
+        const childState = childrenState[node.id];
+        const childLoading = childState?.loading && childState.rows.length === 0;
         out.push(
-          toFlatRow(node, ancestors, isExpanded, loading.has(node.id), shownIds.has(node.id)),
+          toFlatRow(node, ancestors, isExpanded, Boolean(childLoading), shownIds.has(node.id)),
         );
-        if (isExpanded) {
-          const kids = childrenMap[node.id];
-          if (kids) walk(kids, [...ancestors, node]);
+        if (isExpanded && childState) {
+          const childAncestors = [...ancestors, node];
+          walk(childState.rows, childAncestors);
+          if (childState.nextPage != null) {
+            out.push(
+              toLoaderRow(node.id, node.level + 1, childState.nextPage, childState.loading),
+            );
+          }
         }
       }
     };
-    walk(roots, []);
-    return out;
-  }, [roots, childrenMap, expanded, loading, sortModel, shownIds]);
 
-  return { rows, toggle, rootLoading, sortModel, setSortModel };
+    walk(rootState.rows, []);
+    if (rootState.nextPage != null) {
+      out.push(toLoaderRow(null, 0, rootState.nextPage, rootState.loading));
+    }
+    return out;
+  }, [childrenState, expanded, rootState, shownIds]);
+
+  return {
+    rows,
+    toggle,
+    rootLoading: rootState.loading && rootState.rows.length === 0,
+    sortModel,
+    setSortModel: handleSortModelChange,
+    loadMoreForRow,
+  };
 }

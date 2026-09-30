@@ -9,11 +9,11 @@ export const nodeScenario: ScenarioConfig = {
   chartTitle: 'Latency over time — node, instance & user',
   treeHeader: 'Node / Instance / User',
   levels: [
-    { columns: [textCol('region', 'Region', 96), ...metricCols] },
-    { columns: [textCol('status', 'Status', 84), ...metricCols] },
-    { columns: [textCol('connection', 'Connection', 118), ...metricCols] },
+    { label: 'Gateway', columns: [textCol('region', 'Region', 96), ...metricCols] },
+    { label: 'Instance', columns: [textCol('status', 'Status', 84), ...metricCols] },
+    { label: 'User', columns: [textCol('connection', 'Connection', 118), ...metricCols] },
   ],
-  fetchRoot: () => fetchRoot('node'),
+  fetchRoot: (request) => fetchRoot('node', request),
   fetchChildren,
   fetchSeries,
 };
